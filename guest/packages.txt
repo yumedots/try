@@ -18,3 +18,4 @@ lazygit
 micro
 ttf-hack-nerd
 noto-fonts
+fastfetch
