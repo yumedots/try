@@ -5,6 +5,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+StandardOutput=journal+console
+StandardError=journal+console
 ExecStart=/usr/local/lib/try/firstBoot.sh
 
 [Install]
