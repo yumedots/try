@@ -5,7 +5,7 @@ local function qemu_program(find_tool)
     return tool and tool.program
 end
 
-local function qemu_args(option)
+local function qemu_args(option, os)
     local g = shared.guest()
     local accel = os.host() == "macosx" and "hvf" or "kvm"
     local argv = {
@@ -15,15 +15,16 @@ local function qemu_args(option)
         "-m", option.get("mem") or "8G",
         "-kernel", path.join(shared.rootdir, g.kernel),
         "-initrd", path.join(shared.rootdir, g.initrd),
-        "-append", "root=/dev/vda rw console=tty0 console=ttyAMA0",
+        "-append", "root=/dev/vda rw console=tty0 console=ttyAMA0 tryuid=" .. shared.host_uid(os),
         "-drive", "if=virtio,format=qcow2,file=" .. shared.diskfile,
-        "-device", "virtio-gpu-pci",
+        "-device", "virtio-gpu-pci,xres=" .. (option.get("width") or "2560") .. ",yres=" .. (option.get("height") or "1440"),
         "-device", "virtio-rng-pci",
         "-device", "qemu-xhci",
         "-device", "usb-kbd",
         "-device", "usb-tablet",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0",
+        "-virtfs", "local,path=" .. (option.get("home") or shared.homedir) .. ",mount_tag=home,security_model=mapped-xattr",
         "-virtfs", "local,path=" .. (option.get("share") or shared.projectdir) .. ",mount_tag=share,security_model=mapped-xattr",
         "-serial", "file:" .. shared.logfile,
         "-no-reboot"
@@ -33,7 +34,7 @@ local function qemu_args(option)
         table.join2(argv, {"-virtfs", "local,path=" .. dotfiles .. ",mount_tag=dotfiles,security_model=mapped-xattr"})
     end
     if os.host() == "macosx" then
-        table.join2(argv, {"-display", "cocoa"})
+        table.join2(argv, {"-display", "cocoa,show-cursor=on"})
     end
     return argv
 end
@@ -73,7 +74,7 @@ on_run(function ()
     print("dotfiles  " .. ((option.get("dotfiles") or shared.dotfiles) or "none"))
     print("log       " .. shared.logfile)
     if program and os.isfile(shared.diskfile) then
-        print("run       " .. program .. " " .. table.concat(qemu_args(option), " "))
+        print("run       " .. program .. " " .. table.concat(qemu_args(option, os), " "))
     end
 end)
 set_menu {
@@ -109,7 +110,7 @@ on_run(function ()
     if not os.isfile(path.join(shared.rootdir, g.kernel)) then
         assert(false, "guest kernel missing, run: xmake build disk")
     end
-    local argv = qemu_args(option)
+    local argv = qemu_args(option, os)
     local reset = option.get("reset-user") and "user" or (option.get("reset-config") and "config" or nil)
     if option.get("dry-run") then
         if reset then
@@ -121,6 +122,9 @@ on_run(function ()
     if reset then
         shared.request_reset(os, io, reset)
     end
+    if not os.isdir(option.get("home") or shared.homedir) then
+        os.mkdir(option.get("home") or shared.homedir)
+    end
     print("booting " .. g.arch .. " with " .. (option.get("cpus") or "8") .. " cores, " .. (option.get("mem") or "8G") .. ", log " .. shared.logfile)
     os.execv(program, argv)
 end)
@@ -129,6 +133,9 @@ set_menu {
     description = "Boot the guest in QEMU",
     options = {
         {nil, "share", "kv", nil, "Host folder to share over 9p (default: this repo)"},
+        {nil, "home", "kv", nil, "Host folder that becomes the guest home (default: <repo>/home)"},
+        {nil, "width", "kv", "2560", "Guest screen width"},
+        {nil, "height", "kv", "1440", "Guest screen height"},
         {nil, "dotfiles", "kv", nil, "Host dotfiles folder to share (default: ~/dotfiles)"},
         {nil, "mem", "kv", "8G", "Guest RAM"},
         {nil, "cpus", "kv", "8", "Guest cores"},

@@ -23,6 +23,16 @@ shared.diskfile = path.join(shared.builddir, "rootfs.qcow2")
 shared.logfile = path.join(shared.builddir, "guest.log")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
+shared.homedir = path.join(shared.projectdir, "home")
+
+
+function shared.host_uid(os)
+    if not shared.uid then
+        local out = os.host() ~= "windows" and os.iorunv("id", {"-u"}) or nil
+        shared.uid = (out and tonumber(out:trim())) or 1000
+    end
+    return shared.uid
+end
 
 function shared.guest()
     local g = shared.guests[os.arch()]
