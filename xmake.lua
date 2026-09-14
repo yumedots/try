@@ -23,19 +23,10 @@ shared.diskfile = path.join(shared.builddir, "rootfs.qcow2")
 shared.logfile = path.join(shared.builddir, "guest.log")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
-shared.homedir = path.join(shared.projectdir, "home")
 shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
 shared.firstbootfile = path.join(shared.builddir, "guest/firstboot")
 shared.guest_arch = "arm64"
 
-
-function shared.host_uid(os)
-    if not shared.uid then
-        local out = os.host() ~= "windows" and os.iorunv("id", {"-u"}) or nil
-        shared.uid = (out and tonumber(out:trim())) or 1000
-    end
-    return shared.uid
-end
 
 function shared.guest()
     local g = shared.guests[os.arch()]
@@ -130,15 +121,6 @@ function shared.pigz(os)
     end
     print("pigz build failed, falling back to tar")
     return nil
-end
-
-function shared.request_reset(os, io, mode)
-    io.writefile(path.join(shared.builddir, "resetConfig"), mode .. "\n")
-    if mode == "user" then
-        print("guest home will be wiped on the next boot, then configs relinked")
-    else
-        print("guest dotfile links will be relinked on the next boot")
-    end
 end
 
 function shared.fetch_latest(g, os, io, force)
@@ -241,6 +223,10 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.mkdir(prov)
     os.cp(firstboot, path.join(prov, "firstboot"))
     os.cp(path.join(shared.projectdir, "guest/packages.txt"), prov)
+    if not shared.dotfiles or not os.isdir(shared.dotfiles) then
+        os.raise("dotfiles source missing or submodule not populated: " .. tostring(shared.dotfiles))
+    end
+    os.cp(path.join(shared.dotfiles, "*"), path.join(prov, "dotfiles"))
     os.execv("chmod", {"755", path.join(prov, "firstboot")})
     os.cp(path.join(shared.projectdir, "guest/firstBoot.service"), path.join(shared.rootdir, "etc/systemd/system/firstBoot.service"))
     local wants = path.join(shared.rootdir, "etc/systemd/system/multi-user.target.wants")

@@ -32,11 +32,6 @@ set_menu {
 
 task("reset")
 on_run(function ()
-    import("core.base.option")
-    if option.get("config") or option.get("user") then
-        shared.request_reset(os, io, option.get("user") and "user" or "config")
-        return
-    end
     if os.isfile(shared.diskfile) then
         os.rm(shared.diskfile)
         print("dropped " .. shared.diskfile)
@@ -49,12 +44,8 @@ on_run(function ()
     print("next: xmake run (rebuilds the disk from cache, then provisions the guest)")
 end)
 set_menu {
-    usage = "xmake reset [--config|--user]",
-    description = "Drop the guest disk (keeps tarball + tree) or only guest state",
-    options = {
-        {nil, "config", "k", nil, "Only relink the guest dotfiles on the next boot"},
-        {nil, "user", "k", nil, "Wipe the guest home on the next boot, then relink"}
-    }
+    usage = "xmake reset",
+    description = "Drop the guest disk and keep the cached tarball and tree"
 }
 
 target("disk")

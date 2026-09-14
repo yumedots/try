@@ -24,9 +24,9 @@ try/
 ## Flow
 
 1. `xmake fetch`: QEMU + ISO -> `build/`, cached.
-2. First boot: systemd once-unit runs the Go program from `guest/firstBoot/main.go`: install `guest/packages.txt`, link `dotfiles/*` -> `~/.config/*`, then disables itself.
+2. First boot: systemd once-unit runs the Go program from `guest/firstBoot/main.go`: install `guest/packages.txt`, link baked `dotfiles/*` -> `~/.config/*`, then disables itself.
 3. Persistent disk: pay once, reuse every boot.
-4. 9p share: 1 Mac folder -> `~/SameName` in guest. Not full home.
+4. Dotfiles: copied into the guest image at build time. The guest home stays on the persistent disk.
 5. QEMU: HVF accel, virtio-gpu virgl. Homebrew QEMU now, prebuilt per platform later.
 
 ## Resizable display architecture

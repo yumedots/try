@@ -15,7 +15,7 @@ local function qemu_args(option, os)
         "-m", option.get("mem") or "8G",
         "-kernel", path.join(shared.rootdir, g.kernel),
         "-initrd", path.join(shared.rootdir, g.initrd),
-        "-append", "root=/dev/vda rw console=tty0 console=ttyAMA0 tryuid=" .. shared.host_uid(os),
+        "-append", "root=/dev/vda rw console=tty0 console=ttyAMA0",
         "-drive", "if=virtio,format=qcow2,file=" .. shared.diskfile,
         "-device", "virtio-gpu-pci,xres=" .. (option.get("width") or "2560") .. ",yres=" .. (option.get("height") or "1440"),
         "-device", "virtio-rng-pci",
@@ -24,15 +24,9 @@ local function qemu_args(option, os)
         "-device", "usb-tablet",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0",
-        "-virtfs", "local,path=" .. (option.get("home") or shared.homedir) .. ",mount_tag=home,security_model=mapped-xattr",
-        "-virtfs", "local,path=" .. (option.get("share") or shared.projectdir) .. ",mount_tag=share,security_model=mapped-xattr",
         "-serial", "file:" .. shared.logfile,
         "-no-reboot"
     }
-    local dotfiles = option.get("dotfiles") or shared.dotfiles
-    if dotfiles and os.isdir(dotfiles) then
-        table.join2(argv, {"-virtfs", "local,path=" .. dotfiles .. ",mount_tag=dotfiles,security_model=mapped-xattr"})
-    end
     if os.host() == "macosx" then
         table.join2(argv, {"-display", "cocoa,show-cursor=on,zoom-to-fit=on"})
     end
@@ -70,8 +64,7 @@ on_run(function ()
     else
         print("disk      missing, run xmake build disk")
     end
-    print("share     " .. (option.get("share") or shared.projectdir))
-    print("dotfiles  " .. ((option.get("dotfiles") or shared.dotfiles) or "none"))
+    print("dotfiles  " .. (shared.dotfiles or "none") .. " -> baked into disk")
     print("log       " .. shared.logfile)
     if program and os.isfile(shared.diskfile) then
         print("run       " .. program .. " " .. table.concat(qemu_args(option, os), " "))
@@ -79,7 +72,7 @@ on_run(function ()
 end)
 set_menu {
     usage = "xmake doctor",
-    description = "Show host, tools, tarball, disk, snapshots and share state"
+    description = "Show host, tools, tarball, disk, baked dotfiles and snapshots"
 }
 
 task("run")
@@ -111,19 +104,9 @@ on_run(function ()
         os.raise("guest kernel missing, run: xmake build disk")
     end
     local argv = qemu_args(option, os)
-    local reset = option.get("reset-user") and "user" or (option.get("reset-config") and "config" or nil)
     if option.get("dry-run") then
-        if reset then
-            print("would reset guest " .. reset)
-        end
         print(program .. " " .. table.concat(argv, " "))
         return
-    end
-    if reset then
-        shared.request_reset(os, io, reset)
-    end
-    if not os.isdir(option.get("home") or shared.homedir) then
-        os.mkdir(option.get("home") or shared.homedir)
     end
     print("booting " .. g.arch .. " with " .. (option.get("cpus") or "8") .. " cores, " .. (option.get("mem") or "8G") .. ", log " .. shared.logfile)
     os.execv(program, argv)
@@ -132,16 +115,11 @@ set_menu {
     usage = "xmake run [options]",
     description = "Boot the guest in QEMU",
     options = {
-        {nil, "share", "kv", nil, "Host folder to share over 9p (default: this repo)"},
-        {nil, "home", "kv", nil, "Host folder that becomes the guest home (default: <repo>/home)"},
         {nil, "width", "kv", "2560", "Guest screen width"},
         {nil, "height", "kv", "1440", "Guest screen height"},
-        {nil, "dotfiles", "kv", nil, "Host dotfiles folder to share (default: ~/dotfiles)"},
         {nil, "mem", "kv", "8G", "Guest RAM"},
         {nil, "cpus", "kv", "8", "Guest cores"},
         {nil, "fresh", "k", nil, "Rebuild the guest disk from cache before booting"},
-        {"u", "reset-user", "k", nil, "Wipe the guest home before booting (no reinstall)"},
-        {"c", "reset-config", "k", nil, "Relink the guest dotfiles before booting"},
         {"n", "dry-run", "k", nil, "Print the QEMU command instead of running it"}
     }
 }
