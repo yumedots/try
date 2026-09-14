@@ -1,6 +1,5 @@
 [Unit]
 Description=try guest provisioning
-Wants=network-online.target
 After=network.target
 
 [Service]
