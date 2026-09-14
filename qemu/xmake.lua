@@ -85,19 +85,33 @@ on_run(function ()
     if not program then
         assert(false, "qemu-system-" .. g.arch .. " is not in PATH")
     end
+    if option.get("fresh") and os.isfile(shared.diskfile) then
+        os.rm(shared.diskfile)
+        print("dropped " .. shared.diskfile)
+    end
     if not os.isfile(shared.diskfile) then
-        import("net.http.download")
-        shared.fetch_latest(g, os, download, io)
-        shared.prepare_guest(g, os, find_tool)
+        local started = os.time()
+        shared.fetch_latest(g, os, io)
+        shared.prepare_guest(g, os, find_tool, io)
+        print("disk setup in " .. (os.time() - started) .. "s")
+        print("first boot: the guest installs its packages for ~2 min, ly appears after that")
     end
     if not os.isfile(path.join(shared.rootdir, g.kernel)) then
         assert(false, "guest kernel missing, run: xmake build disk")
     end
     local argv = qemu_args(option)
+    local reset = option.get("reset-user") and "user" or (option.get("reset-config") and "config" or nil)
     if option.get("dry-run") then
+        if reset then
+            print("would reset guest " .. reset)
+        end
         print(program .. " " .. table.concat(argv, " "))
         return
     end
+    if reset then
+        shared.request_reset(os, io, reset)
+    end
+    print("booting " .. g.arch .. " with " .. (option.get("cpus") or "8") .. " cores, " .. (option.get("mem") or "8G") .. ", log " .. shared.logfile)
     os.execv(program, argv)
 end)
 set_menu {
@@ -107,6 +121,9 @@ set_menu {
         {nil, "share", "kv", nil, "Host folder to share over 9p (default: this repo)"},
         {nil, "mem", "kv", "8G", "Guest RAM"},
         {nil, "cpus", "kv", "8", "Guest cores"},
+        {nil, "fresh", "k", nil, "Rebuild the guest disk from cache before booting"},
+        {"u", "reset-user", "k", nil, "Wipe the guest home before booting (no reinstall)"},
+        {"c", "reset-config", "k", nil, "Relink the guest dotfiles before booting"},
         {"n", "dry-run", "k", nil, "Print the QEMU command instead of running it"}
     }
 }
