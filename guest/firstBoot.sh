@@ -6,6 +6,7 @@ uid_desktop=1000
 share_name=${TRY_SHARE_NAME:-try}
 state=/var/lib/try
 provisioned=$state/provisioned
+started=$(date +%s)
 
 user=$(getent passwd "$uid_desktop" | cut -d: -f1)
 if [ -z "$user" ]; then
@@ -14,16 +15,50 @@ if [ -z "$user" ]; then
 fi
 home=$(getent passwd "$user" | cut -d: -f6)
 share="$home/$share_name"
-tarball="$share/build/archlinuxarm.tar.gz"
+tarball="$share/.cache/archlinuxarm.tar.gz"
+reset_flag="$share/build/resetConfig"
 
-stamp=$(md5sum "$here/firstBoot.sh" | cut -d' ' -f1)
+relink_config () {
+    rm -rf "$home/.config"
+    install -d -m 755 "$home/.config"
+    for src in "$share/dotfiles"/*; do
+        ln -sfnT "$src" "$home/.config/$(basename "$src")"
+    done
+    printf 'export ZDOTDIR="$HOME/.config/zsh"\n' > "$home/.zshenv"
+    if [ ! -d "$home/.oh-my-zsh" ]; then
+        git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh "$home/.oh-my-zsh" || true
+    fi
+    chown -R "$user" "$home/.config" "$home/.zshenv" "$home/.oh-my-zsh"
+    if [ -x /usr/bin/zsh ]; then
+        chsh -s /usr/bin/zsh "$user"
+    fi
+}
+
 install -d -m 755 "$state"
-if [ -s "$provisioned" ] && [ "$(cat "$provisioned")" = "$stamp" ]; then
-    exit 0
-fi
-
 install -d -o "$user" -g "$user" "$share"
 mountpoint -q "$share" || mount -t 9p -o trans=virtio,version=9p2000.L share "$share"
+
+mode=""
+if [ -e "$reset_flag" ]; then
+    mode=$(cat "$reset_flag")
+fi
+
+wipe_home () {
+    if [ "$mode" = "user" ]; then
+        find "$home" -mindepth 1 -maxdepth 1 ! -name "$share_name" -exec rm -rf {} +
+    fi
+    rm -f "$reset_flag"
+}
+
+stamp=$(md5sum "$here/firstBoot.sh" | cut -d' ' -f1)
+if [ -s "$provisioned" ] && [ "$(cat "$provisioned")" = "$stamp" ]; then
+    if [ -n "$mode" ]; then
+        wipe_home
+        relink_config
+        echo "$mode reset done in $(( $(date +%s) - started ))s"
+    fi
+    exit 0
+fi
 
 if [ "$(stat -c %u /etc/passwd)" != "0" ]; then
     tar -xpf "$tarball" -C /
@@ -39,11 +74,18 @@ sed -i "s/^#\?[[:space:]]*ParallelDownloads.*/ParallelDownloads = 10/;s/^#\?[[:s
 fstab_line="share $share 9p trans=virtio,version=9p2000.L,nofail 0 0"
 grep -qsxF "$fstab_line" /etc/fstab || printf '%s\n' "$fstab_line" >> /etc/fstab
 
+waited=0
+while [ "$waited" -lt 30 ] && ! ip route show default | grep -q .; do
+    sleep 1
+    waited=$((waited + 1))
+done
+
 if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ]; then
     pacman-key --init
     pacman-key --populate archlinuxarm
 fi
 
+packages_started=$(date +%s)
 listed=$(grep -vE '^[[:space:]]*(#|$)' "$here/packages.txt")
 pkgs=$(printf '%s\n' "$listed" | grep -vx hyprland)
 failed=""
@@ -61,6 +103,7 @@ if printf '%s\n' "$listed" | grep -qx hyprland; then
         fi
     fi
 fi
+echo "packages in $(( $(date +%s) - packages_started ))s"
 
 if [ -x /usr/bin/Hyprland ]; then
     for lib in $(ldd /usr/bin/Hyprland 2>/dev/null | awk '/not found/{print $1}'); do
@@ -76,26 +119,25 @@ if [ -x /usr/bin/Hyprland ]; then
     echo "Hyprland missing libs: $(ldd /usr/bin/Hyprland | grep -c 'not found')"
 fi
 
+wipe_home
+
 systemctl enable --now systemd-networkd sshd
 
-install -d -m 755 "$home/.config"
-for src in "$share/dotfiles"/*; do
-    ln -sfnT "$src" "$home/.config/$(basename "$src")"
-done
-chown -R "$user" "$home/.config"
-
-if [ ! -d "$home/.oh-my-zsh" ]; then
-    git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh "$home/.oh-my-zsh" || true
+if command -v ly-dm >/dev/null; then
+    printf 'LANG=C.UTF-8\n' > /etc/locale.conf
+    systemctl disable getty@tty1.service 2>/dev/null || true
+    systemctl enable ly@tty1.service
+    echo "ly $(systemctl is-enabled ly@tty1.service), sessions: $(ls /usr/share/wayland-sessions 2>/dev/null | tr '\n' ' ')"
 fi
-printf 'export ZDOTDIR="$HOME/.config/zsh"\n' > "$home/.zshenv"
-chown -R "$user" "$home/.oh-my-zsh" "$home/.zshenv"
-[ -x /usr/bin/zsh ] && chsh -s /usr/bin/zsh "$user"
+
+relink_config
 
 if [ -n "$failed" ]; then
-    echo "not installed:$failed" >&2
+    echo "not installed:$failed after $(( $(date +%s) - started ))s" >&2
     echo "retry with: systemctl restart firstBoot.service" >&2
     exit 1
 fi
 
 printf '%s\n' "$stamp" > "$provisioned"
 systemctl disable firstBoot.service 2>/dev/null || true
+echo "provisioned in $(( $(date +%s) - started ))s"

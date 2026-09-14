@@ -1,6 +1,7 @@
 sudo
 openssh
 git
+ly
 zsh
 foot
 hyprland
