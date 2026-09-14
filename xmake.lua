@@ -14,13 +14,24 @@ shared = {
 }
 
 shared.builddir = path.join(shared.projectdir, "build")
-shared.tarball = path.join(shared.builddir, "archlinuxarm.tar.gz")
-shared.md5file = path.join(shared.builddir, "archlinuxarm.md5")
-shared.rootdir = path.join(shared.builddir, "root")
+shared.cachedir = path.join(shared.projectdir, ".cache")
+shared.tarball = path.join(shared.cachedir, "archlinuxarm.tar.gz")
+shared.md5file = path.join(shared.cachedir, "archlinuxarm.md5")
+shared.rootdir = path.join(shared.cachedir, "root")
 shared.rawfile = path.join(shared.builddir, "rootfs.raw")
 shared.diskfile = path.join(shared.builddir, "rootfs.qcow2")
 shared.logfile = path.join(shared.builddir, "guest.log")
+shared.stampfile = path.join(shared.builddir, "guest.stamp")
 shared.disksize = "32G"
+shared.guestfiles = {"guest/firstBoot.sh", "guest/firstBoot.service", "guest/packages.txt"}
+
+function shared.guest_stamp()
+    local parts = {}
+    for _, f in ipairs(shared.guestfiles) do
+        parts[#parts + 1] = hash.md5(path.join(shared.projectdir, f))
+    end
+    return table.concat(parts)
+end
 
 function shared.guest()
     local g = shared.guests[os.arch()]
@@ -46,37 +57,85 @@ function shared.mke2fs(find_tool)
     end
 end
 
-function shared.fetch_latest(g, os, download, io)
-    os.mkdir(shared.builddir)
+function shared.request_reset(os, io, mode)
+    io.writefile(path.join(shared.builddir, "resetConfig"), mode .. "\n")
+    if mode == "user" then
+        print("guest home will be wiped on the next boot, then configs relinked")
+    else
+        print("guest dotfile links will be relinked on the next boot")
+    end
+end
+
+function shared.aria2(os)
+    local found = os.iorunv("sh", {"-c", "command -v aria2c 2>/dev/null || true"}):trim()
+    return found ~= "" and found or nil
+end
+
+function shared.fetch_latest(g, os, io, force)
+    os.mkdir(shared.cachedir)
+    if os.isfile(shared.tarball) and not force then
+        print("tarball cached " .. hash.md5(shared.tarball))
+        return
+    end
     local want = shared.remote_md5(g.tarball, os)
     if want and os.isfile(shared.tarball) and hash.md5(shared.tarball) == want then
         print("tarball up to date " .. want)
         return
     end
-    print("download " .. g.tarball)
-    download(g.tarball, shared.tarball, {continue = true, insecure_fallback = true})
+    local started = os.time()
+    local aria = shared.aria2(os)
+    if aria then
+        print("download (aria2c, 16 connections) " .. g.tarball)
+        os.execv(aria, {"-c", "-x16", "-s16", "-k1M", "--file-allocation=none", "--summary-interval=2", "--console-log-level=warn", "-d", shared.cachedir, "-o", "archlinuxarm.tar.gz", g.tarball})
+    else
+        print("download (curl, 1 connection; brew install aria2 to go faster) " .. g.tarball)
+        os.execv("curl", {"-fL", "--progress-bar", "--retry", "3", "-C", "-", "-o", shared.tarball, g.tarball})
+    end
     local actual = hash.md5(shared.tarball)
     if want and actual ~= want then
         assert(false, "tarball md5 mismatch: mirror says " .. want .. ", got " .. actual)
     end
     io.writefile(shared.md5file, actual .. "\n")
-    print("tarball ok " .. actual)
+    print("tarball ok " .. actual .. " in " .. (os.time() - started) .. "s")
 end
 
-function shared.prepare_guest(g, os, find_tool)
+function shared.prepare_guest(g, os, find_tool, io)
+    local total = os.time()
     if not os.isfile(shared.tarball) then
         assert(false, "tarball missing, run: xmake fetch")
     end
-    os.mkdir(shared.builddir)
+    local stamp = shared.guest_stamp()
+    local stamped = (os.isfile(shared.stampfile) and os.iorunv("cat", {shared.stampfile}):trim()) or ""
+    if os.isfile(shared.diskfile) and stamped == stamp then
+        print("disk kept " .. shared.diskfile)
+        return
+    end
+    if os.isfile(shared.diskfile) then
+        print("guest files changed, dropping " .. shared.diskfile)
+        os.rm(shared.diskfile)
+    end
+    os.mkdir(shared.cachedir)
     os.mkdir(shared.rootdir)
     if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
         print("extract " .. shared.tarball)
-        os.execv("sh", {"-c", "tar -xpf " .. shared.tarball .. " -C " .. shared.rootdir .. " || true"})
+        local started = os.time()
+        local pigz = os.iorunv("sh", {"-c", "command -v pigz 2>/dev/null || true"}):trim()
+        local extract
+        if pigz ~= "" then
+            extract = pigz .. " -dc " .. shared.tarball .. " | tar -xpf - -C " .. shared.rootdir
+        else
+            print("tip: brew install pigz to extract in parallel")
+            extract = "tar -xpf " .. shared.tarball .. " -C " .. shared.rootdir
+        end
+        os.execv("sh", {"-c", extract .. " 2>/dev/null || true"})
         if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
             assert(false, "extract failed, rm -rf " .. shared.rootdir .. " and retry")
         end
+        os.execv("chmod", {"-R", "u+rwX", shared.rootdir})
+        print("extracted in " .. (os.time() - started) .. "s")
+    else
+        print("tree cached " .. shared.rootdir)
     end
-    os.execv("chmod", {"-R", "u+rwX", shared.rootdir})
 
     local prov = path.join(shared.rootdir, "usr/local/lib/try")
     if os.isdir(prov) then
@@ -91,22 +150,24 @@ function shared.prepare_guest(g, os, find_tool)
     os.mkdir(wants)
     os.execv("ln", {"-sf", "/etc/systemd/system/firstBoot.service", path.join(wants, "firstBoot.service")})
 
-    if os.isfile(shared.diskfile) then
-        print("disk kept " .. shared.diskfile)
-        return
+    local mke2fs = shared.mke2fs(find_tool)
+    if not mke2fs then
+        assert(false, "mke2fs not found, install e2fsprogs")
     end
-    if not os.isfile(shared.rawfile) then
-        local mke2fs = shared.mke2fs(find_tool)
-        if not mke2fs then
-            assert(false, "mke2fs not found, install e2fsprogs")
-        end
-        print("create " .. shared.rawfile .. " " .. shared.disksize)
-        os.execv("qemu-img", {"create", "-f", "raw", shared.rawfile, shared.disksize})
-        os.execv(mke2fs, {"-t", "ext4", "-F", "-d", shared.rootdir, shared.rawfile})
-    end
+    local started = os.time()
+    print("create " .. shared.rawfile .. " " .. shared.disksize)
+    os.rm(shared.rawfile)
+    os.execv("qemu-img", {"create", "-f", "raw", shared.rawfile, shared.disksize})
+    os.execv(mke2fs, {"-t", "ext4", "-F", "-d", shared.rootdir, shared.rawfile})
+    print("raw built in " .. (os.time() - started) .. "s")
+    local convert_started = os.time()
     print("convert " .. shared.rawfile .. " -> " .. shared.diskfile)
     os.execv("qemu-img", {"convert", "-O", "qcow2", shared.rawfile, shared.diskfile})
     os.rm(shared.rawfile)
+    print("disk ready in " .. (os.time() - convert_started) .. "s")
+    print("size " .. os.iorunv("sh", {"-c", "ls -lh " .. shared.diskfile .. " | awk '{print $5}'"}):trim())
+    io.writefile(shared.stampfile, stamp .. "\n")
+    print("guest image ready in " .. (os.time() - total) .. "s total")
 end
 
 includes("guest")
@@ -114,9 +175,20 @@ includes("qemu")
 
 task("clean")
 on_run(function ()
+    import("core.base.option")
     os.rmdir(shared.builddir)
+    print("deleted " .. shared.builddir)
+    if option.get("cache") then
+        os.rmdir(shared.cachedir)
+        print("deleted " .. shared.cachedir)
+    else
+        print("kept " .. shared.cachedir .. " (tarball + tree, drop with: xmake clean --cache)")
+    end
 end)
 set_menu {
-    usage = "xmake clean",
-    description = "Delete build/"
+    usage = "xmake clean [--cache]",
+    description = "Delete build/, keeping the download and tree cache in .cache/",
+    options = {
+        {nil, "cache", "k", nil, "Also delete .cache/ (tarball + extracted tree)"}
+    }
 }
