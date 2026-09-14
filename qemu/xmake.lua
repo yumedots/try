@@ -28,6 +28,10 @@ local function qemu_args(option)
         "-serial", "file:" .. shared.logfile,
         "-no-reboot"
     }
+    local dotfiles = option.get("dotfiles") or shared.dotfiles
+    if dotfiles and os.isdir(dotfiles) then
+        table.join2(argv, {"-virtfs", "local,path=" .. dotfiles .. ",mount_tag=dotfiles,security_model=mapped-xattr"})
+    end
     if os.host() == "macosx" then
         table.join2(argv, {"-display", "cocoa"})
     end
@@ -66,6 +70,7 @@ on_run(function ()
         print("disk      missing, run xmake build disk")
     end
     print("share     " .. (option.get("share") or shared.projectdir))
+    print("dotfiles  " .. ((option.get("dotfiles") or shared.dotfiles) or "none"))
     print("log       " .. shared.logfile)
     if program and os.isfile(shared.diskfile) then
         print("run       " .. program .. " " .. table.concat(qemu_args(option), " "))
@@ -119,6 +124,7 @@ set_menu {
     description = "Boot the guest in QEMU",
     options = {
         {nil, "share", "kv", nil, "Host folder to share over 9p (default: this repo)"},
+        {nil, "dotfiles", "kv", nil, "Host dotfiles folder to share (default: ~/dotfiles)"},
         {nil, "mem", "kv", "8G", "Guest RAM"},
         {nil, "cpus", "kv", "8", "Guest cores"},
         {nil, "fresh", "k", nil, "Rebuild the guest disk from cache before booting"},

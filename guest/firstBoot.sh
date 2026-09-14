@@ -17,11 +17,13 @@ home=$(getent passwd "$user" | cut -d: -f6)
 share="$home/$share_name"
 tarball="$share/.cache/archlinuxarm.tar.gz"
 reset_flag="$share/build/resetConfig"
+dotfiles_share=/mnt/dotfiles
 
 relink_config () {
     rm -rf "$home/.config"
     install -d -m 755 "$home/.config"
-    for src in "$share/dotfiles"/*; do
+    for src in "$dotfiles_share"/*; do
+        [ -e "$src" ] || continue
         ln -sfnT "$src" "$home/.config/$(basename "$src")"
     done
     printf 'export ZDOTDIR="$HOME/.config/zsh"\n' > "$home/.zshenv"
@@ -29,14 +31,17 @@ relink_config () {
         git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh "$home/.oh-my-zsh" || true
     fi
     chown -R "$user" "$home/.config" "$home/.zshenv" "$home/.oh-my-zsh"
+    echo "linked $(find "$home/.config" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l) configs from $dotfiles_share"
+    echo "mounts: $(mountpoint -q "$dotfiles_share" && echo dotfiles || echo dotfiles-missing), $(mountpoint -q "$share" && echo share || echo share-missing), fstab $(grep -c 9p /etc/fstab) 9p entries"
     if [ -x /usr/bin/zsh ]; then
         chsh -s /usr/bin/zsh "$user"
     fi
 }
 
-install -d -m 755 "$state"
+install -d -m 755 "$state" "$dotfiles_share"
 install -d -o "$user" -g "$user" "$share"
 mountpoint -q "$share" || mount -t 9p -o trans=virtio,version=9p2000.L share "$share"
+mountpoint -q "$dotfiles_share" || mount -t 9p -o trans=virtio,version=9p2000.L dotfiles "$dotfiles_share" 2>/dev/null || true
 
 mode=""
 if [ -e "$reset_flag" ]; then
@@ -71,8 +76,16 @@ fi
 ignore=$(pacman -Qq | grep -E '^linux-firmware|^linux-aarch64$' | tr '\n' ' ')
 sed -i "s/^#\?[[:space:]]*ParallelDownloads.*/ParallelDownloads = 10/;s/^#\?[[:space:]]*IgnorePkg.*/IgnorePkg = $ignore/" /etc/pacman.conf
 
-fstab_line="share $share 9p trans=virtio,version=9p2000.L,nofail 0 0"
-grep -qsxF "$fstab_line" /etc/fstab || printf '%s\n' "$fstab_line" >> /etc/fstab
+mirror_line='Server = http://ca.us.mirror.archlinuxarm.org/$arch/$repo'
+if ! grep -qxF "$mirror_line" /etc/pacman.d/mirrorlist; then
+    printf '%s\n' "$mirror_line" | cat - /etc/pacman.d/mirrorlist > /etc/pacman.d/mirrorlist.new
+    mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+fi
+
+for fstab_line in "share $share 9p trans=virtio,version=9p2000.L,nofail 0 0" \
+                  "dotfiles $dotfiles_share 9p trans=virtio,version=9p2000.L,nofail 0 0"; do
+    grep -qsxF "$fstab_line" /etc/fstab || printf '%s\n' "$fstab_line" >> /etc/fstab
+done
 
 waited=0
 while [ "$waited" -lt 30 ] && ! ip route show default | grep -q .; do
@@ -94,6 +107,14 @@ if ! pacman -Syu --needed --noconfirm --noprogressbar $pkgs; then
     for pkg in $pkgs; do
         pacman -S --needed --noconfirm --noprogressbar "$pkg" || failed="$failed $pkg"
     done
+fi
+
+if [ -n "$failed" ]; then
+    retry=""
+    for pkg in $failed; do
+        pacman -S --needed --noconfirm --noprogressbar "$pkg" || retry="$retry $pkg"
+    done
+    failed="$retry"
 fi
 
 if printf '%s\n' "$listed" | grep -qx hyprland; then
