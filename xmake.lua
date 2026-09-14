@@ -24,6 +24,7 @@ shared.logfile = path.join(shared.builddir, "guest.log")
 shared.stampfile = path.join(shared.builddir, "guest.stamp")
 shared.disksize = "32G"
 shared.guestfiles = {"guest/firstBoot.sh", "guest/firstBoot.service", "guest/packages.txt"}
+shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 
 function shared.guest_stamp()
     local parts = {}
@@ -66,11 +67,6 @@ function shared.request_reset(os, io, mode)
     end
 end
 
-function shared.aria2(os)
-    local found = os.iorunv("sh", {"-c", "command -v aria2c 2>/dev/null || true"}):trim()
-    return found ~= "" and found or nil
-end
-
 function shared.fetch_latest(g, os, io, force)
     os.mkdir(shared.cachedir)
     if os.isfile(shared.tarball) and not force then
@@ -83,15 +79,48 @@ function shared.fetch_latest(g, os, io, force)
         return
     end
     local started = os.time()
-    local aria = shared.aria2(os)
-    if aria then
-        print("download (aria2c, 16 connections) " .. g.tarball)
-        os.execv(aria, {"-c", "-x16", "-s16", "-k1M", "--file-allocation=none", "--summary-interval=2", "--console-log-level=warn", "-d", shared.cachedir, "-o", "archlinuxarm.tar.gz", g.tarball})
-    else
-        print("download (curl, 1 connection; brew install aria2 to go faster) " .. g.tarball)
-        os.execv("curl", {"-fL", "--progress-bar", "--retry", "3", "-C", "-", "-o", shared.tarball, g.tarball})
+    print("download (8 parallel ranges) " .. g.tarball)
+    local parts = path.join(shared.cachedir, "parts")
+    if os.isdir(parts) then
+        os.rmdir(parts)
     end
+    os.mkdir(parts)
+    os.execv("sh", {"-c", "url=" .. g.tarball .. "; out=" .. shared.tarball .. "; parts=" .. parts .. [[
+; size=$(curl -fsSLI "$url" | tr -d '' | awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
+n=8
+[ "${size:-0}" -gt 8000000 ] || n=1
+chunk=$(( (${size:-0} + n - 1) / n ))
+i=0
+while [ "$i" -lt "$n" ]; do
+    from=$(( i * chunk ))
+    to=$(( from + chunk - 1 ))
+    [ "$to" -ge "${size:-0}" ] && to=$(( ${size:-0} - 1 ))
+    range="$from-$to"
+    [ "$n" -eq 1 ] && range="$from-"
+    curl -fsSL -r "$range" -o "$parts/part.$i" "$url" &
+    i=$(( i + 1 ))
+done
+want=$(( ${size:-0} / 1024 ))
+i=0
+while [ "$i" -lt 900 ]; do
+    got=$(du -sk "$parts" 2>/dev/null | awk '{print $1}')
+    printf '%s%% (%s MB)' "$(( got * 100 / (want + 1) ))" "$(( got / 1024 ))"
+    [ "$got" -ge "$want" ] && break
+    sleep 1
+    i=$(( i + 1 ))
+done
+wait
+printf '
+'
+cat "$parts"/part.* > "$out"
+rm -rf "$parts"
+]]})
     local actual = hash.md5(shared.tarball)
+    if want and actual ~= want then
+        print("parallel download incomplete, retrying in one stream")
+        os.execv("curl", {"-fL", "--progress-bar", "--retry", "3", "-o", shared.tarball, g.tarball})
+        actual = hash.md5(shared.tarball)
+    end
     if want and actual ~= want then
         assert(false, "tarball md5 mismatch: mirror says " .. want .. ", got " .. actual)
     end
@@ -124,7 +153,6 @@ function shared.prepare_guest(g, os, find_tool, io)
         if pigz ~= "" then
             extract = pigz .. " -dc " .. shared.tarball .. " | tar -xpf - -C " .. shared.rootdir
         else
-            print("tip: brew install pigz to extract in parallel")
             extract = "tar -xpf " .. shared.tarball .. " -C " .. shared.rootdir
         end
         os.execv("sh", {"-c", extract .. " 2>/dev/null || true"})
