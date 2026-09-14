@@ -11,7 +11,7 @@ local function qemu_args(option)
     local argv = {
         "-machine", "virt,accel=" .. accel .. ",highmem=on",
         "-cpu", "host",
-        "-smp", option.get("cpus") or "4",
+        "-smp", option.get("cpus") or "8",
         "-m", option.get("mem") or "8G",
         "-kernel", path.join(shared.rootdir, g.kernel),
         "-initrd", path.join(shared.rootdir, g.initrd),
@@ -106,7 +106,7 @@ set_menu {
     options = {
         {nil, "share", "kv", nil, "Host folder to share over 9p (default: this repo)"},
         {nil, "mem", "kv", "8G", "Guest RAM"},
-        {nil, "cpus", "kv", "4", "Guest cores"},
+        {nil, "cpus", "kv", "8", "Guest cores"},
         {"n", "dry-run", "k", nil, "Print the QEMU command instead of running it"}
     }
 }
