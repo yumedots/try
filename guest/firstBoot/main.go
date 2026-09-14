@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,8 +28,6 @@ type guestUser struct {
 
 type runtimeState struct {
 	user     guestUser
-	share    string
-	dotfiles string
 	config   string
 	packages string
 	sources  []string
@@ -108,7 +107,7 @@ func interactive() bool {
 func provision(state *runtimeState) ([]step, []action) {
 	steps := []step{
 		{name: "resolve guest user"},
-		{name: "mount guest shares"},
+		{name: "normalize guest ownership"},
 		{name: "install guest packages"},
 		{name: "verify dotfiles source"},
 		{name: "link dotfiles"},
@@ -118,37 +117,19 @@ func provision(state *runtimeState) ([]step, []action) {
 	}
 	actions := []action{
 		func() error {
-			uid := desktopUID()
-			user, err := resolveUser(uid)
+			user, err := resolveUser(1000)
 			if err != nil {
 				return err
 			}
 			state.user = user
-			state.share = filepath.Join(user.home, shareName())
-			state.dotfiles = "/mnt/dotfiles"
 			state.config = filepath.Join(user.home, ".config")
 			return nil
 		},
 		func() error {
-			if err := mountShare("home", state.user.home); err != nil {
-				return err
-			}
-			if err := os.MkdirAll(state.share, 0755); err != nil {
-				return fmt.Errorf("create shared project directory: %w", err)
-			}
-			if err := os.Chown(state.share, state.user.uid, state.user.gid); err != nil {
-				logf("chown %s: %v", state.share, err)
-			}
-			if err := mountShare("share", state.share); err != nil {
-				return err
-			}
-			if err := mountShare("dotfiles", state.dotfiles); err != nil {
-				return err
-			}
-			return nil
+			return normalizeGuestOwnership(state.user)
 		},
 		func() error {
-			packages, err := packagePath(state)
+			packages, err := packagePath()
 			if err != nil {
 				return err
 			}
@@ -160,7 +141,7 @@ func provision(state *runtimeState) ([]step, []action) {
 			return installPackages(packages)
 		},
 		func() error {
-			sources, err := dotfileSources(state.dotfiles)
+			sources, err := dotfileSources("/usr/local/lib/try/dotfiles")
 			if err != nil {
 				return err
 			}
@@ -337,9 +318,17 @@ func logf(format string, args ...any) {
 
 func command(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
 	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	if interactive() {
+		cmd.Stdout = &output
+		cmd.Stderr = &output
+	} else {
+		stream := io.MultiWriter(&output, os.Stderr)
+		cmd.Stdout = stream
+		cmd.Stderr = stream
+		fmt.Fprintf(os.Stderr, "[try] %s %s\n", name, strings.Join(args, " "))
+	}
 	err := cmd.Run()
 	text := strings.TrimSpace(output.String())
 	if text != "" {
@@ -362,20 +351,6 @@ func lastLines(value string, count int) string {
 	return strings.Join(lines[len(lines)-count:], "\n")
 }
 
-func desktopUID() int {
-	data, err := os.ReadFile("/proc/cmdline")
-	if err == nil {
-		for _, field := range strings.Fields(string(data)) {
-			if strings.HasPrefix(field, "tryuid=") {
-				if value, err := strconv.Atoi(strings.TrimPrefix(field, "tryuid=")); err == nil && value > 0 {
-					return value
-				}
-			}
-		}
-	}
-	return 1000
-}
-
 func resolveUser(uid int) (guestUser, error) {
 	user, err := lookupUser(strconv.Itoa(uid))
 	if err == nil {
@@ -395,6 +370,37 @@ func resolveUser(uid int) (guestUser, error) {
 	return guestUser{}, fmt.Errorf("no guest user with uid %d", uid)
 }
 
+func normalizeGuestOwnership(user guestUser) error {
+	for _, path := range []string{"/", "/home"} {
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		}
+		if err := os.Chown(path, 0, 0); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+	}
+	for _, path := range []string{"/boot", "/etc", "/lib", "/lib64", "/opt", "/root", "/sbin", "/usr", "/var"} {
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		}
+		if err := filepath.Walk(path, func(current string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return os.Lchown(current, 0, 0)
+			}
+			return os.Chown(current, 0, 0)
+		}); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+	}
+	if err := os.Chown(user.home, user.uid, user.gid); err != nil {
+		return fmt.Errorf("chown %s: %w", user.home, err)
+	}
+	return nil
+}
+
 func lookupUser(identifier string) (guestUser, error) {
 	data, err := os.ReadFile("/etc/passwd")
 	if err != nil {
@@ -412,37 +418,12 @@ func lookupUser(identifier string) (guestUser, error) {
 	return guestUser{}, fmt.Errorf("user %s not found", identifier)
 }
 
-func shareName() string {
-	if value := os.Getenv("TRY_SHARE_NAME"); value != "" {
-		return value
+func packagePath() (string, error) {
+	path := "/usr/local/lib/try/packages.txt"
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, nil
 	}
-	return "try"
-}
-
-func mountShare(tag, mountPoint string) error {
-	if _, err := command("mountpoint", "-q", mountPoint); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(mountPoint, 0755); err != nil {
-		return fmt.Errorf("create mount point %s: %w", mountPoint, err)
-	}
-	if _, err := command("mount", "-t", "9p", "-o", "trans=virtio,version=9p2000.L", tag, mountPoint); err != nil {
-		return fmt.Errorf("mount %s at %s: %w", tag, mountPoint, err)
-	}
-	return nil
-}
-
-func packagePath(state *runtimeState) (string, error) {
-	candidates := []string{
-		filepath.Join(state.share, "guest", "packages.txt"),
-		"/usr/local/lib/try/packages.txt",
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("package manifest missing in %s and /usr/local/lib/try", state.share)
+	return "", fmt.Errorf("package manifest missing at %s", path)
 }
 
 func provisioned(path string) bool {
@@ -653,34 +634,63 @@ func configureShell(user guestUser) error {
 }
 
 func configureConsole() error {
+	if err := os.WriteFile("/etc/locale.conf", []byte("LANG=C.UTF-8\n"), 0644); err != nil {
+		return fmt.Errorf("write locale.conf: %w", err)
+	}
 	matches, _ := filepath.Glob("/usr/share/kbd/consolefonts/ter-232n.psf*")
-	if len(matches) == 0 {
-		return nil
+	if len(matches) > 0 {
+		if err := os.WriteFile("/etc/vconsole.conf", []byte("FONT=ter-232n\n"), 0644); err != nil {
+			return fmt.Errorf("write vconsole.conf: %w", err)
+		}
+		if _, err := command("setfont", "ter-232n"); err != nil {
+			logf("set console font: %v", err)
+		}
 	}
-	if err := os.WriteFile("/etc/vconsole.conf", []byte("FONT=ter-232n\n"), 0644); err != nil {
-		return fmt.Errorf("write vconsole.conf: %w", err)
-	}
-	if _, err := command("setfont", "ter-232n"); err != nil {
-		logf("set console font: %v", err)
+	if _, err := command("unicode_start"); err != nil {
+		return fmt.Errorf("enable unicode console: %w", err)
 	}
 	return nil
 }
 
 func configureLogin(uid int) error {
-	path := "/etc/login.defs"
-	data, err := os.ReadFile(path)
+	loginDefsPath := "/etc/login.defs"
+	data, err := os.ReadFile(loginDefsPath)
 	if err != nil {
-		return fmt.Errorf("read login.defs: %w", err)
+		return fmt.Errorf("read %s: %w", loginDefsPath, err)
 	}
-	line := []byte(fmt.Sprintf("UID_MIN %d", uid))
+	line := []byte("UID_MIN 1000")
 	pattern := regexp.MustCompile(`(?m)^\s*UID_MIN\s+.*$`)
 	if pattern.Match(data) {
 		data = pattern.ReplaceAll(data, line)
-	} else {
-		data = append(data, append([]byte("\n"), append(line, '\n')...)...)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("write login.defs: %w", err)
+	if err := os.WriteFile(loginDefsPath, data, 0644); err != nil {
+		return fmt.Errorf("write %s: %w", loginDefsPath, err)
+	}
+	if err := os.MkdirAll("/etc/ly", 0755); err != nil {
+		return fmt.Errorf("create ly config directory: %w", err)
+	}
+	userDefs := "/etc/ly/try-login.defs"
+	if err := os.WriteFile(userDefs, []byte(fmt.Sprintf("UID_MIN %d\nUID_MAX %d\n", uid, uid)), 0644); err != nil {
+		return fmt.Errorf("write ly login defs: %w", err)
+	}
+	configPath := "/etc/ly/config.ini"
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read ly config: %w", err)
+	}
+	config = setLyConfig(config, "login_defs_path", userDefs)
+	config = setLyConfig(config, "type_username", "false")
+	if err := os.WriteFile(configPath, config, 0644); err != nil {
+		return fmt.Errorf("write ly config: %w", err)
 	}
 	return nil
+}
+
+func setLyConfig(data []byte, key, value string) []byte {
+	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(key) + `\s*=.*$`)
+	line := []byte(key + " = " + value)
+	if pattern.Match(data) {
+		return pattern.ReplaceAll(data, line)
+	}
+	return append(data, append([]byte("\n"), append(line, '\n')...)...)
 }
