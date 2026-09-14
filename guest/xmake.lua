@@ -1,5 +1,16 @@
 local shared = shared
 
+target("firstboot")
+set_kind("binary")
+set_default(false)
+set_targetdir(path.join(shared.builddir, "guest"))
+set_filename("firstboot")
+add_files(path.join(shared.firstbootdir, "*.go"))
+on_build(function (target)
+    import("lib.detect.find_tool")
+    shared.build_firstboot(os, target:targetfile(), find_tool)
+end)
+
 task("fetch")
 on_run(function ()
     shared.fetch_latest(shared.guest(), os, io, true)

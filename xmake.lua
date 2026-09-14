@@ -24,6 +24,9 @@ shared.logfile = path.join(shared.builddir, "guest.log")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 shared.homedir = path.join(shared.projectdir, "home")
+shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
+shared.firstbootfile = path.join(shared.builddir, "guest/firstboot")
+shared.guest_arch = "arm64"
 
 
 function shared.host_uid(os)
@@ -37,7 +40,7 @@ end
 function shared.guest()
     local g = shared.guests[os.arch()]
     if not g then
-        assert(false, "no guest image for host arch " .. os.arch() .. " yet")
+        os.raise("no guest image for host arch " .. os.arch() .. " yet")
     end
     return g
 end
@@ -56,6 +59,55 @@ function shared.mke2fs(find_tool)
             return p
         end
     end
+end
+
+function shared.go(os, find_tool)
+    local tool = find_tool and find_tool("go") or nil
+    if tool then
+        return tool.program
+    end
+
+    local host = os.host() == "macosx" and "darwin" or "linux"
+    local arch = os.arch() == "x86_64" and "amd64" or os.arch()
+    local toolchain_dir = path.join(shared.cachedir, "toolchains/go")
+    local go = path.join(toolchain_dir, "go/bin/go")
+    if os.isfile(go) then
+        return go
+    end
+
+    local version = os.iorunv("curl", {"-fsSL", "https://go.dev/VERSION?m=text"}):split("\n")[1]
+    local archive_url = "https://go.dev/dl/" .. version .. "." .. host .. "-" .. arch .. ".tar.gz"
+
+    os.mkdir(toolchain_dir)
+    local archive = path.join(toolchain_dir, path.filename(archive_url))
+    print("download Go toolchain " .. archive_url)
+    os.execv("curl", {"-fL", "--retry", "3", "-o", archive, archive_url})
+    os.execv("tar", {"-xzf", archive, "-C", toolchain_dir})
+    os.rm(archive)
+    if not os.isfile(go) then
+        os.raise("Go toolchain extraction failed")
+    end
+    return go
+end
+
+function shared.build_firstboot(os, target, find_tool)
+    local go = shared.go(os, find_tool)
+    target = target or shared.firstbootfile
+    os.mkdir(path.directory(target))
+    os.execv(go, {"build", "-trimpath", "-ldflags=-s -w", "-o", target, "."}, {
+        curdir = shared.firstbootdir,
+        envs = {
+            GOOS = "linux",
+            GOARCH = shared.guest_arch,
+            CGO_ENABLED = "0",
+            GO111MODULE = "on",
+            GOCACHE = path.join(shared.cachedir, "go-build"),
+            GOMODCACHE = path.join(shared.cachedir, "go-mod"),
+            GOPATH = path.join(shared.cachedir, "go-path")
+        }
+    })
+    os.execv("chmod", {"755", target})
+    return target
 end
 
 function shared.pigz(os)
@@ -127,7 +179,6 @@ want=$(( ${size:-0} / 1024 ))
 i=0
 while [ "$i" -lt 900 ]; do
     got=$(du -sk "$parts" 2>/dev/null | awk '{print $1}')
-    printf '
     printf '\r%s%% (%s MB)' "$(( got * 100 / (want + 1) ))" "$(( got / 1024 ))" > /dev/tty 2>/dev/null || true
     [ "$got" -ge "$want" ] && break
     sleep 1
@@ -135,7 +186,6 @@ while [ "$i" -lt 900 ]; do
 done
 wait
 printf '\r\n' > /dev/tty 2>/dev/null || true
-'
 cat "$parts"/part.* > "$out"
 rm -rf "$parts"
 ]]})
@@ -146,7 +196,7 @@ rm -rf "$parts"
         actual = hash.md5(shared.tarball)
     end
     if want and actual ~= want then
-        assert(false, "tarball md5 mismatch: mirror says " .. want .. ", got " .. actual)
+        os.raise("tarball md5 mismatch: mirror says " .. want .. ", got " .. actual)
     end
     io.writefile(shared.md5file, actual .. "\n")
     print("tarball ok " .. actual .. " in " .. (os.time() - started) .. "s")
@@ -155,12 +205,13 @@ end
 function shared.prepare_guest(g, os, find_tool, io)
     local total = os.time()
     if not os.isfile(shared.tarball) then
-        assert(false, "tarball missing, run: xmake fetch")
+        os.raise("tarball missing, run: xmake fetch")
     end
     if not os.isdir(shared.builddir) then
         os.mkdir(shared.builddir)
     end
     os.mkdir(shared.cachedir)
+    local firstboot = shared.build_firstboot(os, nil, find_tool)
     os.mkdir(shared.rootdir)
     if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
         local started = os.time()
@@ -175,7 +226,7 @@ function shared.prepare_guest(g, os, find_tool, io)
         end
         os.execv("sh", {"-c", extract .. " 2>/dev/null || true"})
         if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
-            assert(false, "extract failed, rm -rf " .. shared.rootdir .. " and retry")
+            os.raise("extract failed, rm -rf " .. shared.rootdir .. " and retry")
         end
         os.execv("chmod", {"-R", "u+rwX", shared.rootdir})
         print("extracted in " .. (os.time() - started) .. "s")
@@ -188,9 +239,9 @@ function shared.prepare_guest(g, os, find_tool, io)
         os.rmdir(prov)
     end
     os.mkdir(prov)
-    os.cp(path.join(shared.projectdir, "guest/firstBoot.sh"), prov)
+    os.cp(firstboot, path.join(prov, "firstboot"))
     os.cp(path.join(shared.projectdir, "guest/packages.txt"), prov)
-    os.execv("chmod", {"755", path.join(prov, "firstBoot.sh")})
+    os.execv("chmod", {"755", path.join(prov, "firstboot")})
     os.cp(path.join(shared.projectdir, "guest/firstBoot.service"), path.join(shared.rootdir, "etc/systemd/system/firstBoot.service"))
     local wants = path.join(shared.rootdir, "etc/systemd/system/multi-user.target.wants")
     os.mkdir(wants)
@@ -202,7 +253,7 @@ function shared.prepare_guest(g, os, find_tool, io)
     end
     local mke2fs = shared.mke2fs(find_tool)
     if not mke2fs then
-        assert(false, "mke2fs not found, install e2fsprogs")
+        os.raise("mke2fs not found, install e2fsprogs")
     end
     local started = os.time()
     print("create " .. shared.rawfile .. " " .. shared.disksize)

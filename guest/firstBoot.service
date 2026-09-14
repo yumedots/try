@@ -1,12 +1,19 @@
 [Unit]
 Description=try guest provisioning
-After=network.target
+After=network-online.target local-fs.target
+Wants=network-online.target
+Conflicts=getty@tty1.service
+Requires=dev-tty1.device
 
 [Service]
 Type=oneshot
 StandardOutput=journal+console
 StandardError=journal+console
-ExecStart=/usr/local/lib/try/firstBoot.sh
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+ExecStart=/usr/local/lib/try/firstboot
 
 [Install]
 WantedBy=multi-user.target
