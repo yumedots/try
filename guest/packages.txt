@@ -11,7 +11,6 @@ cliphist
 wl-clipboard
 xdg-desktop-portal-hyprland
 polkit-kde-agent
-dolphin
 btop
 yazi
 lazygit
@@ -19,3 +18,4 @@ micro
 ttf-hack-nerd
 noto-fonts
 fastfetch
+terminus-font

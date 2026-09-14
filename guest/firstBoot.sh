@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "firstBoot failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
-uid_desktop=1000
+uid_desktop=$(sed -n 's/.*tryuid=\([0-9]\{1,\}\).*/\1/p' /proc/cmdline | head -1)
+uid_desktop=${uid_desktop:-1000}
 share_name=${TRY_SHARE_NAME:-try}
 state=/var/lib/try
 dotfiles_share=/mnt/dotfiles
 started=$(date +%s)
 
-user=$(getent passwd "$uid_desktop" | cut -d: -f1)
+user=$(getent passwd "$uid_desktop" | cut -d: -f1 || true)
+if [ -z "$user" ] && [ "$uid_desktop" != 1000 ] && getent passwd alarm >/dev/null; then
+    usermod -u "$uid_desktop" alarm || true
+    groupmod -g "$uid_desktop" alarm || true
+    user=$(getent passwd "$uid_desktop" | cut -d: -f1 || true)
+fi
 if [ -z "$user" ]; then
     echo "no user with uid $uid_desktop, create one first" >&2
     exit 1
 fi
-home=$(getent passwd "$user" | cut -d: -f6)
+home=$(getent passwd "$user" | cut -d: -f6 || true)
+echo "guest user $user uid $uid_desktop home $home"
 share="$home/$share_name"
 tarball="$share/.cache/archlinuxarm.tar.gz"
 reset_flag="$share/build/resetConfig"
 
 install -d -m 755 "$state" "$dotfiles_share"
-install -d -o "$user" -g "$user" "$share"
+mountpoint -q "$home" || mount -t 9p -o trans=virtio,version=9p2000.L home "$home" 2>/dev/null || true
+install -d -o "$user" -g "$user" "$share" 2>/dev/null || install -d "$share"
 mountpoint -q "$share" || mount -t 9p -o trans=virtio,version=9p2000.L share "$share"
 mountpoint -q "$dotfiles_share" || mount -t 9p -o trans=virtio,version=9p2000.L dotfiles "$dotfiles_share" 2>/dev/null || true
 
@@ -54,10 +63,21 @@ relink_config () {
     fi
     chown -R "$user" "$home/.config"
     echo "linked $(find "$home/.config" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l) configs from $dotfiles_share"
-    echo "mounts: $(mountpoint -q "$dotfiles_share" && echo dotfiles || echo dotfiles-missing), $(mountpoint -q "$share" && echo share || echo share-missing), fstab $(grep -c 9p /etc/fstab) 9p entries, zshrc $( [ -f "$home/.config/zsh/.zshrc" ] && echo ok || echo missing)"
+    echo "mounts: $(mountpoint -q "$home" && echo home || echo home-missing), $(mountpoint -q "$dotfiles_share" && echo dotfiles || echo dotfiles-missing), $(mountpoint -q "$share" && echo share || echo share-missing), fstab $(grep -c 9p /etc/fstab) 9p entries, zshrc $( [ -f "$home/.config/zsh/.zshrc" ] && echo ok || echo missing)"
+}
+
+setup_console () {
+    local font
+    font=$(ls -1 /usr/share/kbd/consolefonts 2>/dev/null | grep -m1 '^ter-232n\.psf' || true)
+    if [ -n "$font" ]; then
+        printf 'FONT=ter-232n\n' > /etc/vconsole.conf
+        setfont ter-232n 2>/dev/null || true
+    fi
+    echo "console font ${font:-default}"
 }
 
 wipe_home () {
+    echo "wiping $home (inside the shared host folder)" >&2
     find "$home" -mindepth 1 -maxdepth 1 ! -name "$share_name" -exec rm -rf {} +
 }
 
@@ -75,6 +95,7 @@ if [ -s "$provisioned" ] && [ "$(cat "$provisioned")" = "$stamp" ]; then
     fi
     relink_config
     setup_shell
+    setup_console
     if [ -n "$mode" ]; then
         echo "$mode reset done in $(( $(date +%s) - started ))s"
     fi
@@ -99,7 +120,8 @@ if ! grep -qxF "$mirror_line" /etc/pacman.d/mirrorlist; then
     mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
 fi
 
-for fstab_line in "share $share 9p trans=virtio,version=9p2000.L,nofail 0 0" \
+for fstab_line in "home $home 9p trans=virtio,version=9p2000.L,nofail 0 0" \
+                  "share $share 9p trans=virtio,version=9p2000.L,nofail 0 0" \
                   "dotfiles $dotfiles_share 9p trans=virtio,version=9p2000.L,nofail 0 0"; do
     grep -qsxF "$fstab_line" /etc/fstab || printf '%s\n' "$fstab_line" >> /etc/fstab
 done
@@ -148,6 +170,9 @@ if printf '%s\n' "$listed" | grep -qx hyprland; then
 fi
 echo "packages in $(( $(date +%s) - packages_started ))s"
 
+
+echo "display modes: $(cat /sys/class/drm/*/modes 2>/dev/null | sort -u | tr '\n' ' ')"
+
 if [ -x /usr/bin/Hyprland ]; then
     for lib in $(ldd /usr/bin/Hyprland 2>/dev/null | awk '/not found/{print $1}'); do
         case "$lib" in
@@ -176,6 +201,7 @@ if [ "$mode" = "user" ]; then
 fi
 relink_config
 setup_shell
+setup_console
 
 if [ -n "$failed" ]; then
     echo "not installed:$failed after $(( $(date +%s) - started ))s" >&2
@@ -184,5 +210,4 @@ if [ -n "$failed" ]; then
 fi
 
 printf '%s\n' "$stamp" > "$provisioned"
-systemctl disable firstBoot.service 2>/dev/null || true
 echo "provisioned in $(( $(date +%s) - started ))s"
