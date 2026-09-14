@@ -94,12 +94,17 @@ on_run(function ()
         os.rm(shared.diskfile)
         print("dropped " .. shared.diskfile)
     end
-    if not os.isfile(shared.diskfile) then
-        local started = os.time()
-        shared.fetch_latest(g, os, io)
+    local started = os.time()
+    local had_disk = os.isfile(shared.diskfile)
+    if not option.get("dry-run") then
+        if not had_disk then
+            shared.fetch_latest(g, os, io)
+        end
         shared.prepare_guest(g, os, find_tool, io)
-        print("disk setup in " .. (os.time() - started) .. "s")
-        print("first boot: the guest installs its packages for ~2 min, ly appears after that")
+        if not had_disk then
+            print("disk setup in " .. (os.time() - started) .. "s")
+            print("first boot: the guest installs its packages for ~2 min, ly appears after that")
+        end
     end
     if not os.isfile(path.join(shared.rootdir, g.kernel)) then
         assert(false, "guest kernel missing, run: xmake build disk")

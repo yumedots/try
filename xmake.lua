@@ -21,18 +21,8 @@ shared.rootdir = path.join(shared.cachedir, "root")
 shared.rawfile = path.join(shared.builddir, "rootfs.raw")
 shared.diskfile = path.join(shared.builddir, "rootfs.qcow2")
 shared.logfile = path.join(shared.builddir, "guest.log")
-shared.stampfile = path.join(shared.builddir, "guest.stamp")
 shared.disksize = "32G"
-shared.guestfiles = {"guest/firstBoot.sh", "guest/firstBoot.service", "guest/packages.txt"}
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
-
-function shared.guest_stamp()
-    local parts = {}
-    for _, f in ipairs(shared.guestfiles) do
-        parts[#parts + 1] = hash.md5(path.join(shared.projectdir, f))
-    end
-    return table.concat(parts)
-end
 
 function shared.guest()
     local g = shared.guests[os.arch()]
@@ -56,6 +46,28 @@ function shared.mke2fs(find_tool)
             return p
         end
     end
+end
+
+function shared.pigz(os)
+    local bin = path.join(shared.cachedir, "bin/pigz")
+    if os.isfile(bin) then
+        return bin
+    end
+    if not os.isdir(shared.cachedir) then
+        os.mkdir(shared.cachedir)
+    end
+    local src = path.join(shared.cachedir, "pigz.tar.gz")
+    local dir = path.join(shared.cachedir, "pigz")
+    print("building pigz (parallel gzip) into .cache/bin, no install needed")
+    os.execv("sh", {"-c", "curl -fsSL -o " .. src .. " https://zlib.net/pigz/pigz.tar.gz" ..
+        " && tar -xzf " .. src .. " -C " .. shared.cachedir ..
+        " && mkdir -p " .. path.directory(bin) ..
+        " && make -s -C " .. dir .. " pigz && cp " .. path.join(dir, "pigz") .. " " .. bin .. " || true"})
+    if os.isfile(bin) then
+        return bin
+    end
+    print("pigz build failed, falling back to tar")
+    return nil
 end
 
 function shared.request_reset(os, io, mode)
@@ -86,7 +98,8 @@ function shared.fetch_latest(g, os, io, force)
     end
     os.mkdir(parts)
     os.execv("sh", {"-c", "url=" .. g.tarball .. "; out=" .. shared.tarball .. "; parts=" .. parts .. [[
-; size=$(curl -fsSLI "$url" | tr -d '' | awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
+; size=$(curl -fsSLI "$url" | tr -d '
+' | awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
 n=8
 [ "${size:-0}" -gt 8000000 ] || n=1
 chunk=$(( (${size:-0} + n - 1) / n ))
@@ -104,13 +117,14 @@ want=$(( ${size:-0} / 1024 ))
 i=0
 while [ "$i" -lt 900 ]; do
     got=$(du -sk "$parts" 2>/dev/null | awk '{print $1}')
-    printf '%s%% (%s MB)' "$(( got * 100 / (want + 1) ))" "$(( got / 1024 ))"
+    printf '
+    printf '\r%s%% (%s MB)' "$(( got * 100 / (want + 1) ))" "$(( got / 1024 ))" > /dev/tty 2>/dev/null || true
     [ "$got" -ge "$want" ] && break
     sleep 1
     i=$(( i + 1 ))
 done
 wait
-printf '
+printf '\r\n' > /dev/tty 2>/dev/null || true
 '
 cat "$parts"/part.* > "$out"
 rm -rf "$parts"
@@ -133,26 +147,20 @@ function shared.prepare_guest(g, os, find_tool, io)
     if not os.isfile(shared.tarball) then
         assert(false, "tarball missing, run: xmake fetch")
     end
-    local stamp = shared.guest_stamp()
-    local stamped = (os.isfile(shared.stampfile) and os.iorunv("cat", {shared.stampfile}):trim()) or ""
-    if os.isfile(shared.diskfile) and stamped == stamp then
-        print("disk kept " .. shared.diskfile)
-        return
-    end
-    if os.isfile(shared.diskfile) then
-        print("guest files changed, dropping " .. shared.diskfile)
-        os.rm(shared.diskfile)
+    if not os.isdir(shared.builddir) then
+        os.mkdir(shared.builddir)
     end
     os.mkdir(shared.cachedir)
     os.mkdir(shared.rootdir)
     if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
-        print("extract " .. shared.tarball)
         local started = os.time()
-        local pigz = os.iorunv("sh", {"-c", "command -v pigz 2>/dev/null || true"}):trim()
+        local pigz = shared.pigz(os)
         local extract
-        if pigz ~= "" then
+        if pigz then
+            print("extract (pigz, all cores) " .. shared.tarball)
             extract = pigz .. " -dc " .. shared.tarball .. " | tar -xpf - -C " .. shared.rootdir
         else
+            print("extract (tar) " .. shared.tarball)
             extract = "tar -xpf " .. shared.tarball .. " -C " .. shared.rootdir
         end
         os.execv("sh", {"-c", extract .. " 2>/dev/null || true"})
@@ -178,6 +186,10 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.mkdir(wants)
     os.execv("ln", {"-sf", "/etc/systemd/system/firstBoot.service", path.join(wants, "firstBoot.service")})
 
+    if os.isfile(shared.diskfile) then
+        print("disk kept " .. shared.diskfile)
+        return
+    end
     local mke2fs = shared.mke2fs(find_tool)
     if not mke2fs then
         assert(false, "mke2fs not found, install e2fsprogs")
@@ -194,7 +206,6 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.rm(shared.rawfile)
     print("disk ready in " .. (os.time() - convert_started) .. "s")
     print("size " .. os.iorunv("sh", {"-c", "ls -lh " .. shared.diskfile .. " | awk '{print $5}'"}):trim())
-    io.writefile(shared.stampfile, stamp .. "\n")
     print("guest image ready in " .. (os.time() - total) .. "s total")
 end
 
