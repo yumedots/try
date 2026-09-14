@@ -34,7 +34,7 @@ local function qemu_args(option, os)
         table.join2(argv, {"-virtfs", "local,path=" .. dotfiles .. ",mount_tag=dotfiles,security_model=mapped-xattr"})
     end
     if os.host() == "macosx" then
-        table.join2(argv, {"-display", "cocoa,show-cursor=on"})
+        table.join2(argv, {"-display", "cocoa,show-cursor=on,zoom-to-fit=on"})
     end
     return argv
 end
@@ -89,7 +89,7 @@ on_run(function ()
     local g = shared.guest()
     local program = qemu_program(find_tool)
     if not program then
-        assert(false, "qemu-system-" .. g.arch .. " is not in PATH")
+        os.raise("qemu-system-" .. g.arch .. " is not in PATH")
     end
     if option.get("fresh") and os.isfile(shared.diskfile) then
         os.rm(shared.diskfile)
@@ -98,7 +98,7 @@ on_run(function ()
     local started = os.time()
     local had_disk = os.isfile(shared.diskfile)
     if not option.get("dry-run") then
-        if not had_disk then
+        if not had_disk or not os.isfile(shared.tarball) then
             shared.fetch_latest(g, os, io)
         end
         shared.prepare_guest(g, os, find_tool, io)
@@ -108,7 +108,7 @@ on_run(function ()
         end
     end
     if not os.isfile(path.join(shared.rootdir, g.kernel)) then
-        assert(false, "guest kernel missing, run: xmake build disk")
+        os.raise("guest kernel missing, run: xmake build disk")
     end
     local argv = qemu_args(option, os)
     local reset = option.get("reset-user") and "user" or (option.get("reset-config") and "config" or nil)
@@ -151,7 +151,7 @@ on_run(function ()
     import("core.base.option")
     local name = option.get("name")
     if not name then
-        assert(false, "usage: xmake snapshot --name=<name>")
+        os.raise("usage: xmake snapshot --name=<name>")
     end
     os.execv("qemu-img", {"snapshot", "-c", name, shared.diskfile})
     print(os.iorunv("qemu-img", {"snapshot", "-l", shared.diskfile}))
@@ -169,7 +169,7 @@ on_run(function ()
     import("core.base.option")
     local name = option.get("name")
     if not name then
-        assert(false, "usage: xmake restore --name=<name>")
+        os.raise("usage: xmake restore --name=<name>")
     end
     os.execv("qemu-img", {"snapshot", "-a", name, shared.diskfile})
     print("restored " .. name)
