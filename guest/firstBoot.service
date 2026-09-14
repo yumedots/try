@@ -1,0 +1,11 @@
+[Unit]
+Description=try guest provisioning
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/try/firstBoot.sh
+
+[Install]
+WantedBy=multi-user.target
