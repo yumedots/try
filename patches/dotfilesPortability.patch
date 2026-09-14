@@ -1,0 +1,48 @@
+diff --git a/foot/foot.ini b/foot/foot.ini
+--- a/foot/foot.ini
++++ b/foot/foot.ini
+@@ -1,5 +1,5 @@
+ [main]
+-shell=/usr/sbin/zsh
++shell=/usr/bin/zsh
+ font=Hack Nerd Font:size=15
+ dpi-aware=yes
+ selection-target=both
+diff --git a/hypr/envs.lua b/hypr/envs.lua
+--- a/hypr/envs.lua
++++ b/hypr/envs.lua
+@@ -1,5 +1,9 @@
+ hl.env("XCURSOR_SIZE", "24")
+ hl.env("HYPRCURSOR_SIZE", "24")
+-hl.env("LIBVA_DRIVER_NAME", "nvidia")
+-hl.env("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
+-hl.env("GBM_BACKEND", "nvidia-drm")
++local nvidia_driver = io.open("/proc/driver/nvidia/version")
++if nvidia_driver then
++    nvidia_driver:close()
++    hl.env("LIBVA_DRIVER_NAME", "nvidia")
++    hl.env("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
++    hl.env("GBM_BACKEND", "nvidia-drm")
++end
+diff --git a/hypr/monitors.lua b/hypr/monitors.lua
+--- a/hypr/monitors.lua
++++ b/hypr/monitors.lua
+@@ -1,6 +1,6 @@
+ hl.monitor({
+     output   = "",
+-    mode     = "2560x1440@240",
++    mode     = "preferred",
+     position = "auto",
+-    scale    = "1.6",
++    scale    = "auto",
+ })
+diff --git a/hypr/programs.lua b/hypr/programs.lua
+--- a/hypr/programs.lua
++++ b/hypr/programs.lua
+@@ -3,5 +3,5 @@
+     fileManager    = "dolphin",
+     menu           = "qs ipc call shell launcher",
+     windowSwitcher = "qs ipc call shell windows",
+-    wallpaper      = "/home/gabriel/Documents/Wallpaper/12-Monterey-Dark.jpg",
++    wallpaper      = os.getenv("HOME") .. "/.config/Documents/Wallpaper/12-Monterey-Dark.jpg",
+ }
