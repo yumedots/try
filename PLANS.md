@@ -43,7 +43,7 @@ The work order is: guest provisioning, QEMU D-Bus display export, GPUI framebuff
 
 ## xmake tasks
 
-`doctor fetch guest run ui build package clean`. `is_os/is_arch` picks URLs. `depend.on_changed` skips re-fetch.
+`doctor fetch guest vm run ui build package clean`. `xmake run` launches GPUI; `xmake vm` is the raw QEMU fallback. `is_os/is_arch` picks URLs. `depend.on_changed` skips re-fetch.
 
 ## Order
 

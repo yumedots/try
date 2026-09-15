@@ -258,6 +258,7 @@ end
 
 includes("guest")
 includes("qemu")
+includes("ui")
 
 task("clean")
 on_run(function ()

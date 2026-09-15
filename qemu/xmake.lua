@@ -75,7 +75,7 @@ set_menu {
     description = "Show host, tools, tarball, disk, baked dotfiles and snapshots"
 }
 
-task("run")
+task("vm")
 on_run(function ()
     import("core.base.option")
     import("lib.detect.find_tool")
@@ -112,7 +112,7 @@ on_run(function ()
     os.execv(program, argv)
 end)
 set_menu {
-    usage = "xmake run [options]",
+    usage = "xmake vm [options]",
     description = "Boot the guest in QEMU",
     options = {
         {nil, "width", "kv", "2560", "Guest screen width"},
