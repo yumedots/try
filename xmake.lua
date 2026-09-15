@@ -25,6 +25,8 @@ shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
 shared.firstbootfile = path.join(shared.builddir, "guest/firstboot")
+shared.trydisplaydir = path.join(shared.projectdir, "guest/tryDisplay")
+shared.trydisplayfile = path.join(shared.builddir, "guest/tryDisplay")
 shared.guest_arch = "arm64"
 
 
@@ -81,12 +83,11 @@ function shared.go(os, find_tool)
     return go
 end
 
-function shared.build_firstboot(os, target, find_tool)
+function shared.build_guest_go(os, dir, target, find_tool)
     local go = shared.go(os, find_tool)
-    target = target or shared.firstbootfile
     os.mkdir(path.directory(target))
     os.execv(go, {"build", "-trimpath", "-ldflags=-s -w", "-o", target, "."}, {
-        curdir = shared.firstbootdir,
+        curdir = dir,
         envs = {
             GOOS = "linux",
             GOARCH = shared.guest_arch,
@@ -99,6 +100,14 @@ function shared.build_firstboot(os, target, find_tool)
     })
     os.execv("chmod", {"755", target})
     return target
+end
+
+function shared.build_firstboot(os, target, find_tool)
+    return shared.build_guest_go(os, shared.firstbootdir, target or shared.firstbootfile, find_tool)
+end
+
+function shared.build_trydisplay(os, target, find_tool)
+    return shared.build_guest_go(os, shared.trydisplaydir, target or shared.trydisplayfile, find_tool)
 end
 
 function shared.pigz(os)
@@ -194,6 +203,7 @@ function shared.prepare_guest(g, os, find_tool, io)
     end
     os.mkdir(shared.cachedir)
     local firstboot = shared.build_firstboot(os, nil, find_tool)
+    local trydisplay = shared.build_trydisplay(os, nil, find_tool)
     os.mkdir(shared.rootdir)
     if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
         local started = os.time()
@@ -222,16 +232,21 @@ function shared.prepare_guest(g, os, find_tool, io)
     end
     os.mkdir(prov)
     os.cp(firstboot, path.join(prov, "firstboot"))
+    os.cp(trydisplay, path.join(prov, "tryDisplay"))
     os.cp(path.join(shared.projectdir, "guest/packages.txt"), prov)
     if not shared.dotfiles or not os.isdir(shared.dotfiles) then
         os.raise("dotfiles source missing or submodule not populated: " .. tostring(shared.dotfiles))
     end
     os.cp(path.join(shared.dotfiles, "*"), path.join(prov, "dotfiles"))
-    os.execv("chmod", {"755", path.join(prov, "firstboot")})
+    os.execv("chmod", {"755", path.join(prov, "firstboot"), path.join(prov, "tryDisplay")})
     os.cp(path.join(shared.projectdir, "guest/firstBoot.service"), path.join(shared.rootdir, "etc/systemd/system/firstBoot.service"))
     local wants = path.join(shared.rootdir, "etc/systemd/system/multi-user.target.wants")
     os.mkdir(wants)
     os.execv("ln", {"-sf", "/etc/systemd/system/firstBoot.service", path.join(wants, "firstBoot.service")})
+    os.cp(path.join(shared.projectdir, "guest/tryDisplay.service"), path.join(shared.rootdir, "etc/systemd/system/tryDisplay.service"))
+    local graphical_wants = path.join(shared.rootdir, "etc/systemd/system/graphical.target.wants")
+    os.mkdir(graphical_wants)
+    os.execv("ln", {"-sf", "/etc/systemd/system/tryDisplay.service", path.join(graphical_wants, "tryDisplay.service")})
 
     if os.isfile(shared.diskfile) then
         print("disk kept " .. shared.diskfile)

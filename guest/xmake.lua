@@ -11,6 +11,17 @@ on_build(function (target)
     shared.build_firstboot(os, target:targetfile(), find_tool)
 end)
 
+target("trydisplay")
+set_kind("binary")
+set_default(false)
+set_targetdir(path.join(shared.builddir, "guest"))
+set_filename("tryDisplay")
+add_files(path.join(shared.trydisplaydir, "*.go"))
+on_build(function (target)
+    import("lib.detect.find_tool")
+    shared.build_trydisplay(os, target:targetfile(), find_tool)
+end)
+
 task("fetch")
 on_run(function ()
     shared.fetch_latest(shared.guest(), os, io, true)
@@ -41,7 +52,7 @@ on_run(function ()
             print("kept " .. kept)
         end
     end
-    print("next: xmake run (rebuilds the disk from cache, then provisions the guest)")
+    print("next: xmake vm (rebuilds the disk from cache, then provisions the guest)")
 end)
 set_menu {
     usage = "xmake reset",
