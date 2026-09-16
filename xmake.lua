@@ -23,6 +23,7 @@ shared.logfile = path.join(shared.builddir, "guest.log")
 shared.statedir = os.getenv("TRY_STATE_DIR") or path.join(shared.projectdir, "state")
 shared.settingsfile = path.join(shared.statedir, "settings")
 shared.diskfile = path.join(shared.statedir, "rootfs.qcow2")
+shared.provisionstamp = path.join(shared.builddir, "provision.stamp")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
@@ -394,8 +395,9 @@ end
 
 function shared.fetch_latest(g, os, io, force)
     os.mkdir(shared.cachedir)
-    if os.isfile(shared.tarball) and not force then
-        print("tarball cached " .. hash.md5(shared.tarball))
+    if os.isfile(shared.tarball) and os.filesize(shared.tarball) > 0 and not force then
+        local cached = os.isfile(shared.md5file) and io.readfile(shared.md5file):trim() or "?"
+        print("tarball cached " .. cached)
         return
     end
     local want = shared.remote_md5(g.tarball, os)
@@ -453,6 +455,22 @@ rm -rf "$parts"
     print("tarball ok " .. actual .. " in " .. (os.time() - started) .. "s")
 end
 
+function shared.provision_key(os)
+    local stamp = shared.tarball .. " " .. tostring(os.filesize(shared.tarball)) .. " " .. tostring(os.mtime(shared.tarball))
+    local lines = {shared.disksize, stamp}
+    local patterns = {path.join(shared.projectdir, "guest/**")}
+    if shared.dotfiles then
+        patterns[#patterns + 1] = path.join(shared.dotfiles, "**")
+    end
+    for _, pattern in ipairs(patterns) do
+        for _, file in ipairs(os.files(pattern)) do
+            lines[#lines + 1] = file .. " " .. tostring(os.filesize(file)) .. " " .. tostring(os.mtime(file))
+        end
+    end
+    table.sort(lines)
+    return table.concat(lines, "\n")
+end
+
 function shared.prepare_guest(g, os, find_tool, io)
     local total = os.time()
     if not os.isfile(shared.tarball) then
@@ -463,6 +481,12 @@ function shared.prepare_guest(g, os, find_tool, io)
     end
     os.mkdir(shared.cachedir)
     shared.state(os)
+    local key = shared.provision_key(os)
+    local stamp = os.isfile(shared.provisionstamp) and io.readfile(shared.provisionstamp) or ""
+    if os.isfile(shared.diskfile) and stamp == key then
+        print("disk kept " .. shared.diskfile)
+        return
+    end
     local firstboot = shared.build_firstboot(os, nil, find_tool)
     local trydisplay = shared.build_trydisplay(os, nil, find_tool)
     os.mkdir(shared.rootdir)
@@ -479,7 +503,7 @@ function shared.prepare_guest(g, os, find_tool, io)
         end
         os.execv("sh", {"-c", extract .. " 2>/dev/null || true"})
         if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
-            os.raise("extract failed, rm -rf " .. shared.rootdir .. " and retry")
+            os.raise("extract failed, the tarball is empty or broken, run: xmake fetch")
         end
         os.execv("chmod", {"-R", "u+rwX", shared.rootdir})
         print("extracted in " .. (os.time() - started) .. "s")
@@ -512,6 +536,7 @@ function shared.prepare_guest(g, os, find_tool, io)
 
     if os.isfile(shared.diskfile) then
         print("disk kept " .. shared.diskfile)
+        io.writefile(shared.provisionstamp, key)
         return
     end
     local mke2fs = shared.mke2fs(find_tool)
@@ -523,15 +548,16 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.rm(shared.rawfile)
     local qemu_img = shared.qemu_img(os, find_tool)
     os.execv(qemu_img, {"create", "-f", "raw", shared.rawfile, shared.disksize})
-    os.execv(mke2fs, {"-t", "ext4", "-F", "-d", shared.rootdir, shared.rawfile})
+    os.execv(mke2fs, {"-t", "ext4", "-F", "-E", "lazy_itable_init=1,lazy_journal_init=1", "-J", "size=64", "-d", shared.rootdir, shared.rawfile})
     print("raw built in " .. (os.time() - started) .. "s")
     local convert_started = os.time()
     print("convert " .. shared.rawfile .. " -> " .. shared.diskfile)
-    os.execv(qemu_img, {"convert", "-O", "qcow2", shared.rawfile, shared.diskfile})
+    os.execv(qemu_img, {"convert", "-O", "qcow2", "-m", "8", "-W", shared.rawfile, shared.diskfile})
     os.rm(shared.rawfile)
     print("disk ready in " .. (os.time() - convert_started) .. "s")
     print("size " .. os.iorunv("sh", {"-c", "ls -lh " .. shared.diskfile .. " | awk '{print $5}'"}):trim())
     print("guest image ready in " .. (os.time() - total) .. "s total")
+    io.writefile(shared.provisionstamp, key)
 end
 
 includes("guest")
