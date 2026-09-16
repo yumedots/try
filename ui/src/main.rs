@@ -733,10 +733,10 @@ fn qemu_command(project: &Path) -> Result<(String, Vec<String>, Vec<(String, Str
     ];
     /*
      * The guest renders through the host GPU only when the display it exports is a GL
-     * one, which the fork's QEMU serves over D-Bus; TRY_GL asks for that instead of the
-     * software virtio-gpu, for the runs that measure it against the default.
+     * one, which the fork's QEMU serves over D-Bus; TRY_NO_GL asks for the software
+     * virtio-gpu instead, for the runs that measure it against the default.
      */
-    if env::var_os("TRY_GL").is_some() {
+    if env::var_os("TRY_NO_GL").is_none() {
         args.push("--gl".to_string());
     }
     let output = Command::new("xmake")

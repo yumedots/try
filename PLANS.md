@@ -67,7 +67,7 @@ The work order is: guest provisioning, QEMU D-Bus display export, GPUI framebuff
 
 - macOS arm64 Tahoe 26+: `qemu-virgl` bottle (VirGL/ANGLE, `hvf`, `cocoa,gl=es`), pin + sha256 in `xmake.lua`, unpacked to `.cache/qemu`, missing Homebrew deps pulled from their own bottles, no brew install and no build. Resize follows the QEMU window natively.
 - Linux: stock `qemu-system-*` from PATH, `kvm`, `gtk,gl=on`. Resize follows the window natively (upstream virtio-gpu `SetUIInfo`/EDID).
-- The GPUI bridge keeps `virtio-gpu-pci` and `-display dbus,gl=off`: QEMU only exports `ScanoutDMABUF` on `CONFIG_GBM` builds (Linux), and the launcher renders shared-memory scanouts, so gl and the in-process window are mutually exclusive.
+- The GPUI bridge asks for `virtio-gpu-gl-pci` and `-display dbus,gl=on`: QEMU reads the guest's GL scanout back itself and sends it as the same pixels a 2D scanout is sent as, so the guest renders on the host GPU and the launcher still draws ordinary frames. `TRY_NO_GL=1` (or `xmake vm --no-gl`) falls back to the software `virtio-gpu-pci` and `dbus,gl=off`.
 - `xmake vm --no-gl` falls back to a PATH QEMU without virtio-gpu-gl.
 
 ## Guest state and features
@@ -115,7 +115,7 @@ Today: `-display dbus,gl=off`, so QEMU sends CPU scanout updates and GPUI draws 
 
   2. **QEMU's GL calls went to the wrong library.** libepoxy resolves GL through the platform's GL — Apple's, which owns no context in our process — while the context belongs to ANGLE. Measured with `dladdr` on each pointer: `glDeleteTextures` and friends resolved to libepoxy (which then dlopened `libGL.dylib`), and the crash moved from `glDeleteTextures` to `glGetString` as each was fixed. `egl_init` now takes the entry points the display path uses — 55 of them, the display's calls and epoxy's own internal ones — from the EGL display, so they and the context are the same implementation. Crashes are gone.
 
-  What is left: `-display dbus,gl=on` now boots, survives, and delivers frames (the console's 2D scanout arrives at the right size), but the GL readback comes back black with `dbus: frame buffer read back failed` (a GL error from `glReadPixels` on the borrowed texture — the texture id comes from virglrenderer's context and QEMU's own context is not shared with it, which EGL's default share group does not give us). That is the next thing to fix, and it is why the GL display stays an opt-in experiment (`TRY_GL=1`, `xmake vm --bridge --gl`); the default `dbus,gl=off` path is untouched by any of it, and the two fixes above are what make the guest's own GPU rendering possible at all.
+  3. **The read back was black.** `glReadPixels` was asked for `GL_BGRA`, which GL ES has no format for, so the call failed with `GL_INVALID_ENUM` and left the surface as it was (`dbus: frame buffer read back failed`). It reads `GL_RGBA` now and swaps red and blue back into the software surface, which is BGRA. Measured on a booted guest over `dbus,gl=on`: the frames carry the guest's own picture (the greeter's header line reads back character for character), the FBO attaching the borrowed texture is complete (so virglrenderer's texture is visible in QEMU's context), and QEMU survives the whole boot. `xmake run` asks for the GL display now; `TRY_NO_GL=1` is the software path.
 
 Our own names, not the reference project's: the element, the import and the D-Bus side all get try-side names, and the code is written against the interfaces above rather than copied.
 
