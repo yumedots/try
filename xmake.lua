@@ -26,6 +26,8 @@ shared.diskfile = path.join(shared.statedir, "rootfs.qcow2")
 shared.diskkeyfile = path.join(shared.statedir, "disk.key")
 shared.resetsnapshot = "provisioned"
 shared.rawfile = path.join(shared.builddir, "rootfs.raw")
+shared.tree_new = shared.rootdir .. ".new"
+shared.rootstamp = path.join(shared.cachedir, "root.stamp")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
@@ -444,6 +446,41 @@ function shared.pigz(os)
     return nil
 end
 
+function shared.tree_current(os, io)
+    local stamp = os.isfile(shared.rootstamp) and io.readfile(shared.rootstamp):trim() or ""
+    local md5 = os.isfile(shared.md5file) and io.readfile(shared.md5file):trim() or ""
+    return stamp ~= "" and stamp == md5 and os.isfile(path.join(shared.rootdir, "etc/passwd"))
+end
+
+function shared.swap_tree(os, io)
+    os.execv("sh", {"-c", "rm -rf " .. shared.rootdir .. " && mv " .. shared.tree_new .. " " .. shared.rootdir})
+    os.execv("chmod", {"-R", "u+rwX", shared.rootdir})
+    local md5 = os.isfile(shared.md5file) and io.readfile(shared.md5file):trim() or ""
+    io.writefile(shared.rootstamp, md5 .. "\n")
+end
+
+function shared.extract_tree(g, os, io)
+    if shared.tree_current(os, io) then
+        print("tree cached " .. shared.rootdir)
+        return
+    end
+    local started = os.time()
+    if os.isdir(shared.tree_new) then
+        os.rmdir(shared.tree_new)
+    end
+    os.mkdir(shared.tree_new)
+    local pigz = shared.pigz(os)
+    local command = pigz and (pigz .. " -dc " .. shared.tarball .. " | tar -xpf - -C " .. shared.tree_new) or ("tar -xpf " .. shared.tarball .. " -C " .. shared.tree_new)
+    print("extract " .. shared.tarball)
+    os.execv("sh", {"-c", command .. " 2>/dev/null || true"})
+    if not os.isfile(path.join(shared.tree_new, "etc/passwd")) then
+        os.rmdir(shared.tree_new)
+        os.raise("extract failed, the tarball is empty or broken, run: xmake fetch")
+    end
+    shared.swap_tree(os, io)
+    print("extracted in " .. (os.time() - started) .. "s")
+end
+
 function shared.fetch_latest(g, os, io, force)
     os.mkdir(shared.cachedir)
     if os.isfile(shared.tarball) and os.filesize(shared.tarball) > 0 and not force then
@@ -459,6 +496,7 @@ function shared.fetch_latest(g, os, io, force)
     end
     if want and os.isfile(shared.tarball) and hash.md5(shared.tarball) == want then
         print("tarball up to date " .. want)
+        shared.extract_tree(g, os, io)
         return
     end
     local started = os.time()
@@ -468,6 +506,14 @@ function shared.fetch_latest(g, os, io, force)
         os.rmdir(parts)
     end
     os.mkdir(parts)
+    local tail = "cat >/dev/null"
+    if not shared.tree_current(os, io) then
+        local pigz = shared.pigz(os)
+        tail = (pigz and (pigz .. " -dc | tar -xpf - -C " .. shared.tree_new)) or ("tar -xpf - -C " .. shared.tree_new)
+        tail = tail .. " 2>/dev/null"
+        os.execv("sh", {"-c", "rm -rf " .. shared.tree_new .. " && mkdir -p " .. shared.tree_new})
+        print("extracting while downloading into " .. shared.tree_new)
+    end
     os.execv("sh", {"-c", "url=" .. url .. "; out=" .. shared.tarball .. "; parts=" .. parts .. [[
 ; size=$(curl -fsSLI "$url" | tr -d '
 ' | awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
@@ -481,9 +527,23 @@ while [ "$i" -lt "$n" ]; do
     [ "$to" -ge "${size:-0}" ] && to=$(( ${size:-0} - 1 ))
     range="$from-$to"
     [ "$n" -eq 1 ] && range="$from-"
-    curl -fsSL -r "$range" -o "$parts/part.$i" "$url" &
+    ( curl -fsSL -r "$range" -o "$parts/part.$i" "$url" && : > "$parts/part.$i.done" ) || : > "$parts/failed" &
     i=$(( i + 1 ))
 done
+(
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        j=0
+        while [ ! -e "$parts/part.$i.done" ]; do
+            [ -e "$parts/failed" ] && exit 1
+            [ "$j" -ge 3000 ] && exit 1
+            sleep 0.2
+            j=$(( j + 1 ))
+        done
+        cat "$parts/part.$i"
+        i=$(( i + 1 ))
+    done
+) | tee "$out" | ]] .. tail .. [[ &
 want=$(( ${size:-0} / 1024 ))
 i=0
 while [ "$i" -lt 900 ]; do
@@ -495,10 +555,10 @@ while [ "$i" -lt 900 ]; do
 done
 wait
 printf '\r\n' > /dev/tty 2>/dev/null || true
-cat "$parts"/part.* > "$out"
 rm -rf "$parts"
 ]]})
     local actual = hash.md5(shared.tarball)
+    local streamed = want and actual == want
     if want and actual ~= want then
         print("parallel download incomplete, retrying in one stream")
         os.execv("curl", {"-fL", "--progress-bar", "--retry", "3", "-o", shared.tarball, url})
@@ -510,6 +570,11 @@ rm -rf "$parts"
     end
     io.writefile(shared.md5file, actual .. "\n")
     print("tarball ok " .. actual .. " in " .. (os.time() - started) .. "s")
+    if streamed and os.isfile(path.join(shared.tree_new, "etc/passwd")) then
+        shared.swap_tree(os, io)
+        print("tree streamed in " .. (os.time() - started) .. "s")
+    end
+    shared.extract_tree(g, os, io)
 end
 
 function shared.reset_disk(os, find_tool)
@@ -562,27 +627,7 @@ function shared.prepare_guest(g, os, find_tool, io)
     end
     local firstboot = shared.build_firstboot(os, nil, find_tool)
     local trydisplay = shared.build_trydisplay(os, nil, find_tool)
-    os.mkdir(shared.rootdir)
-    if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
-        local started = os.time()
-        local pigz = shared.pigz(os)
-        local extract
-        if pigz then
-            print("extract (pigz, all cores) " .. shared.tarball)
-            extract = pigz .. " -dc " .. shared.tarball .. " | tar -xpf - -C " .. shared.rootdir
-        else
-            print("extract (tar) " .. shared.tarball)
-            extract = "tar -xpf " .. shared.tarball .. " -C " .. shared.rootdir
-        end
-        os.execv("sh", {"-c", extract .. " 2>/dev/null || true"})
-        if not os.isfile(path.join(shared.rootdir, "etc/passwd")) then
-            os.raise("extract failed, the tarball is empty or broken, run: xmake fetch")
-        end
-        os.execv("chmod", {"-R", "u+rwX", shared.rootdir})
-        print("extracted in " .. (os.time() - started) .. "s")
-    else
-        print("tree cached " .. shared.rootdir)
-    end
+    shared.extract_tree(g, os, io)
 
     local prov = path.join(shared.rootdir, "usr/local/lib/try")
     if os.isdir(prov) then
