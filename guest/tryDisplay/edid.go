@@ -19,6 +19,11 @@ const (
 	minimumScaleStep = 30
 	maximumScaleStep = 480
 
+	mmPerInch     = 25.4
+	logicalDPI    = 110.0
+	fallbackDPI   = 100
+	fallbackScale = 0.0
+
 	displayIDTag       = 0x70
 	displayIDTimingTag = 0x03
 	timingBlock        = 20
@@ -33,6 +38,18 @@ type timing struct {
 
 func (t timing) size() string {
 	return fmt.Sprintf("%dx%d", t.width, t.height)
+}
+
+func (t timing) rate() string {
+	return fmt.Sprintf("%s@%d", t.size(), t.refresh())
+}
+
+func (t timing) refresh() int {
+	total := (t.width + t.hblank) * (t.height + t.vblank)
+	if t.clock <= 0 || total <= 0 {
+		return 0
+	}
+	return (t.clock + total/2) / total
 }
 
 func (t timing) modeline() (string, bool) {
@@ -189,13 +206,7 @@ func displayScale(width, height, widthMM, heightMM int) float64 {
 	if diagonal <= 0 {
 		return fallbackScale
 	}
-	requested := 1.0
-	if ppi := math.Hypot(float64(width), float64(height)) / diagonal; ppi > 200 {
-		requested = 2.0
-	} else if ppi > 140 {
-		requested = 1.5
-	}
-	return cleanScale(width, height, requested)
+	return cleanScale(width, height, math.Hypot(float64(width), float64(height))/diagonal/logicalDPI)
 }
 
 func cleanScale(width, height int, requested float64) float64 {

@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-const logicalDPI = 110.0
-
 const (
 	blankH = 160
 	frontH = 48
@@ -192,5 +190,46 @@ func TestPhysicalSizeUsesTheBaseBlock(t *testing.T) {
 	widthMM, heightMM := physicalSize(baseEDID(3024, 1964, 2.0))
 	if widthMM != 350 || heightMM != 230 {
 		t.Fatalf("physical size = %dx%d mm, want 350x230", widthMM, heightMM)
+	}
+}
+
+func TestALargerWindowLandsOnALargerScale(t *testing.T) {
+	widthMM, heightMM := windowMM(3024, 2.0), windowMM(1964, 2.0)
+	smaller := displayScale(2056, 1326, widthMM, heightMM)
+	reference := displayScale(3024, 1964, widthMM, heightMM)
+	fullscreen := displayScale(3840, 2160, widthMM, heightMM)
+
+	if math.Abs(reference-2) > 0.05 {
+		t.Fatalf("the window the host opens at scaled to %v, want 2", reference)
+	}
+	if smaller >= reference || reference >= fullscreen {
+		t.Fatalf("scales %v, %v, %v do not grow with the window", smaller, reference, fullscreen)
+	}
+}
+
+func TestTheHostRateReadsBackFromTheClock(t *testing.T) {
+	for _, test := range []struct {
+		width, height, hz int
+	}{
+		{3024, 1964, 60},
+		{3024, 1964, 75},
+		{1512, 982, 120},
+	} {
+		edid := baseEDID(test.width, test.height, 2.0)
+		clock := test.hz * (test.width + blankH) * (test.height + blankV) / kilohertz
+		if clock > 0xffff {
+			t.Fatalf("%dx%d at %d Hz does not fit the base block", test.width, test.height, test.hz)
+		}
+		edid[54], edid[55] = byte(clock&0xff), byte(clock>>8)
+		seal(edid)
+
+		_, found, ok := windowRule(writeEDID(t, edid))
+		if !ok {
+			t.Fatalf("%d Hz: no rule", test.hz)
+		}
+		want := fmt.Sprintf("%dx%d@%d", test.width, test.height, test.hz)
+		if rate := found.timing.rate(); rate != want {
+			t.Fatalf("%s read back as %s", want, rate)
+		}
 	}
 }
