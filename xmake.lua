@@ -22,7 +22,6 @@ shared.rawfile = path.join(shared.builddir, "rootfs.raw")
 shared.logfile = path.join(shared.builddir, "guest.log")
 shared.statedir = os.getenv("TRY_STATE_DIR") or path.join(shared.projectdir, "state")
 shared.settingsfile = path.join(shared.statedir, "settings")
-shared.olddiskfile = path.join(shared.builddir, "rootfs.qcow2")
 shared.diskfile = path.join(shared.statedir, "rootfs.qcow2")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
@@ -96,10 +95,6 @@ end
 
 function shared.state(os)
     os.mkdir(shared.statedir)
-    if not os.isfile(shared.diskfile) and os.isfile(shared.olddiskfile) then
-        print("moving " .. shared.olddiskfile .. " -> " .. shared.diskfile)
-        os.mv(shared.olddiskfile, shared.diskfile)
-    end
 end
 
 function shared.virtualization(os, io, program)
