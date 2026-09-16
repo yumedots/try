@@ -158,7 +158,7 @@ func provision(state *runtimeState) ([]step, []action) {
 			if err := configureConsole(); err != nil {
 				return err
 			}
-			return configureLogin(state.user.uid)
+			return configureLogin()
 		},
 		func() error {
 			if _, err := command("systemctl", "enable", "--now", "systemd-networkd"); err != nil {
@@ -173,11 +173,14 @@ func provision(state *runtimeState) ([]step, []action) {
 			if _, err := command("systemctl", "disable", "--now", "getty@tty1.service"); err != nil {
 				logf("disable getty: %v", err)
 			}
-			if _, err := command("systemctl", "enable", "ly@tty1.service"); err != nil {
-				return fmt.Errorf("enable ly: %w", err)
+			if _, err := command("systemctl", "disable", "--now", "ly@tty1.service"); err != nil {
+				logf("disable ly: %v", err)
 			}
-			if _, err := command("systemctl", "restart", "ly@tty1.service"); err != nil {
-				return fmt.Errorf("start ly: %w", err)
+			if _, err := command("systemctl", "enable", "sddm.service"); err != nil {
+				return fmt.Errorf("enable sddm: %w", err)
+			}
+			if _, err := command("systemctl", "restart", "sddm.service"); err != nil {
+				return fmt.Errorf("start sddm: %w", err)
 			}
 			return nil
 		},
@@ -653,7 +656,7 @@ func configureConsole() error {
 	return nil
 }
 
-func configureLogin(uid int) error {
+func configureLogin() error {
 	loginDefsPath := "/etc/login.defs"
 	data, err := os.ReadFile(loginDefsPath)
 	if err != nil {
@@ -667,31 +670,5 @@ func configureLogin(uid int) error {
 	if err := os.WriteFile(loginDefsPath, data, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", loginDefsPath, err)
 	}
-	if err := os.MkdirAll("/etc/ly", 0755); err != nil {
-		return fmt.Errorf("create ly config directory: %w", err)
-	}
-	userDefs := "/etc/ly/try-login.defs"
-	if err := os.WriteFile(userDefs, []byte(fmt.Sprintf("UID_MIN %d\nUID_MAX %d\n", uid, uid)), 0644); err != nil {
-		return fmt.Errorf("write ly login defs: %w", err)
-	}
-	configPath := "/etc/ly/config.ini"
-	config, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("read ly config: %w", err)
-	}
-	config = setLyConfig(config, "login_defs_path", userDefs)
-	config = setLyConfig(config, "type_username", "false")
-	if err := os.WriteFile(configPath, config, 0644); err != nil {
-		return fmt.Errorf("write ly config: %w", err)
-	}
 	return nil
-}
-
-func setLyConfig(data []byte, key, value string) []byte {
-	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(key) + `\s*=.*$`)
-	line := []byte(key + " = " + value)
-	if pattern.Match(data) {
-		return pattern.ReplaceAll(data, line)
-	}
-	return append(data, append([]byte("\n"), append(line, '\n')...)...)
 }

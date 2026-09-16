@@ -1,7 +1,8 @@
 sudo
 openssh
 git
-ly
+sddm
+qt6-wayland
 zsh
 foot
 hyprland
