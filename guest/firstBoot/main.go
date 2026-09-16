@@ -179,7 +179,7 @@ func provision(state *runtimeState) ([]step, []action) {
 			if _, err := command("systemctl", "enable", "sddm.service"); err != nil {
 				return fmt.Errorf("enable sddm: %w", err)
 			}
-			if _, err := command("systemctl", "restart", "sddm.service"); err != nil {
+			if _, err := command("systemctl", "restart", "--no-block", "sddm.service"); err != nil {
 				return fmt.Errorf("start sddm: %w", err)
 			}
 			return nil
