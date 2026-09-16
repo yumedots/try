@@ -640,7 +640,7 @@ on_run(function ()
     os.rmdir(shared.builddir)
     print("deleted " .. shared.builddir)
     if option.get("cache") then
-        os.rmdir(shared.cachedir)
+        os.execv("sh", {"-c", "chmod -R u+w " .. shared.cachedir .. " 2>/dev/null; rm -rf " .. shared.cachedir})
         print("deleted " .. shared.cachedir)
     else
         print("kept " .. shared.cachedir .. " (tarball + tree, drop with: xmake clean --cache)")
