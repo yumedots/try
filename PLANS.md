@@ -23,7 +23,7 @@ try/
 
 ## Flow
 
-1. `xmake fetch`: QEMU bottles + Arch tarball -> `.cache/`, hash-pinned.
+1. `xmake fetch`: the mirror is tested before it is used. `mirror.archlinuxarm.org` is only a redirector and is sticky per burst (12 parallel requests land on one backend, 12 sequential land on a mix), so it is asked 8 times in a row, each backend that answers is speed tested on a 2 MB range, and the fastest one that returns a real range is cached in `.cache/mirror.url` and used for the array download and its md5. A backend that serves the tarball's `.md5` as a 404 is what made the old path fall back to one slow stream (113 s); picking one measured mirror takes the same download to 84 s. QEMU bottles + Arch tarball -> `.cache/`, hash-pinned. `xmake clean --cache` chmods first, because Go's module cache is read-only and `rmdir` aborts on it.
 2. First boot: systemd once-unit runs the Go program from `guest/firstBoot/main.go`: install `guest/packages.txt`, link baked `dotfiles/*` -> `~/.config/*`, then disables itself.
 3. Persistent disk: pay once, reuse every boot.
 4. Dotfiles: copied into the guest image at build time. The guest home stays on the persistent disk.

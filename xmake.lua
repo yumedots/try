@@ -6,7 +6,8 @@ shared = {
     guests = {
         arm64 = {
             arch = "aarch64",
-            tarball = "http://mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
+            tarball = "/os/ArchLinuxARM-aarch64-latest.tar.gz",
+            mirror = "http://mirror.archlinuxarm.org",
             kernel = "boot/Image",
             initrd = "boot/initramfs-linux.img"
         }
@@ -300,6 +301,55 @@ function shared.guest()
     return g
 end
 
+function shared.mirror_url(g, os, io)
+    local stamp = path.join(shared.cachedir, "mirror.url")
+    if os.isfile(stamp) then
+        local kept = io.readfile(stamp):trim()
+        if kept ~= "" then
+            return kept
+        end
+    end
+    print("testing mirrors for " .. g.tarball)
+    local started = os.time()
+    local probe = path.join(shared.cachedir, "mirror.probe")
+    if os.isdir(probe) then
+        os.rmdir(probe)
+    end
+    os.mkdir(probe)
+    local script = [[
+url="]] .. g.mirror .. g.tarball .. [["
+hosts="]] .. probe .. [[/hosts"
+speed="]] .. probe .. [[/speed"
+i=0
+while [ "$i" -lt 8 ]; do
+    curl -sIL --max-time 10 -o /dev/null -w '%{url_effective}\n' "$url" >> "$hosts" 2>/dev/null
+    i=$(( i + 1 ))
+done
+for one in $(sort -u "$hosts"); do
+    curl -fsSL --max-time 20 -r 0-2097151 -o /dev/null -w '%{http_code} %{speed_download} %{url_effective}\n' "$one" >> "$speed" 2>/dev/null &
+done
+wait
+]]
+    local pick = "awk '$1 == 200 || $1 == 206' " .. probe .. "/speed 2>/dev/null | sort -k2 -rn | head -1 | cut -d' ' -f3- || true"
+    local best = ""
+    for _ = 1, 3 do
+        os.execv("sh", {"-c", script})
+        best = os.iorunv("sh", {"-c", pick}):trim()
+        if best ~= "" then
+            break
+        end
+    end
+    os.rmdir(probe)
+    if best == "" then
+        best = g.mirror .. g.tarball
+        print("no mirror answered, falling back to " .. best)
+    else
+        print("mirror " .. best .. " in " .. (os.time() - started) .. "s")
+    end
+    io.writefile(stamp, best .. "\n")
+    return best
+end
+
 function shared.remote_md5(url, os)
     return os.iorunv("sh", {"-c", "curl -fsSL " .. url .. ".md5 2>/dev/null || true"}):split("%s")[1]
 end
@@ -401,19 +451,24 @@ function shared.fetch_latest(g, os, io, force)
         print("tarball cached " .. cached)
         return
     end
-    local want = shared.remote_md5(g.tarball, os)
+    local url = shared.mirror_url(g, os, io)
+    local want = shared.remote_md5(url, os)
+    if not want or want == "" then
+        os.rm(path.join(shared.cachedir, "mirror.url"))
+        os.raise("no md5 from " .. url)
+    end
     if want and os.isfile(shared.tarball) and hash.md5(shared.tarball) == want then
         print("tarball up to date " .. want)
         return
     end
     local started = os.time()
-    print("download (8 parallel ranges) " .. g.tarball)
+    print("download (8 parallel ranges) " .. url)
     local parts = path.join(shared.cachedir, "parts")
     if os.isdir(parts) then
         os.rmdir(parts)
     end
     os.mkdir(parts)
-    os.execv("sh", {"-c", "url=" .. g.tarball .. "; out=" .. shared.tarball .. "; parts=" .. parts .. [[
+    os.execv("sh", {"-c", "url=" .. url .. "; out=" .. shared.tarball .. "; parts=" .. parts .. [[
 ; size=$(curl -fsSLI "$url" | tr -d '
 ' | awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
 n=8
@@ -446,10 +501,11 @@ rm -rf "$parts"
     local actual = hash.md5(shared.tarball)
     if want and actual ~= want then
         print("parallel download incomplete, retrying in one stream")
-        os.execv("curl", {"-fL", "--progress-bar", "--retry", "3", "-o", shared.tarball, g.tarball})
+        os.execv("curl", {"-fL", "--progress-bar", "--retry", "3", "-o", shared.tarball, url})
         actual = hash.md5(shared.tarball)
     end
     if want and actual ~= want then
+        os.rm(path.join(shared.cachedir, "mirror.url"))
         os.raise("tarball md5 mismatch: mirror says " .. want .. ", got " .. actual)
     end
     io.writefile(shared.md5file, actual .. "\n")
