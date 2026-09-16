@@ -1,6 +1,7 @@
 [Unit]
 Description=follow the host window size in the guest display
-After=firstBoot.service display-manager.service
+After=firstBoot.service
+Before=display-manager.service
 
 [Service]
 Type=simple
