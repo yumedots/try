@@ -75,7 +75,8 @@ on_run(function ()
     print("host      " .. os.host() .. "/" .. os.arch())
     print("guest     " .. g.arch)
     if program then
-        print("qemu      " .. program .. " " .. os.iorunv(program, {"--version"}):split("\n")[1])
+        local version = os.iorunv("sh", {"-c", program .. " --version 2>/dev/null | head -1 || true"}):trim()
+        print("qemu      " .. program .. (version ~= "" and " " .. version or " (needs the keg env to run)"))
     else
         print("qemu      missing qemu-system-" .. g.arch)
     end
@@ -98,11 +99,9 @@ on_run(function ()
         print("tarball   missing, run xmake fetch")
     end
     print("rootfs    " .. (os.isfile(path.join(shared.rootdir, "etc/passwd")) and "extracted" or "run xmake build disk"))
-    if os.isfile(shared.basefile) and not os.isfile(shared.diskfile) then
-        print("disk      base " .. shared.basefile .. " ready, overlay pending: run xmake build disk")
-    elseif os.isfile(shared.diskfile) then
-        local snapshots = os.iorun(shared.qemu_img(os, find_tool), {"snapshot", "-l", shared.diskfile}):trim()
-        print("disk      qcow2" .. (snapshots ~= "" and "\n" .. snapshots or ""))
+    if os.isfile(shared.diskfile) then
+        local snapshots = os.iorunv("sh", {"-c", shared.qemu_img(os, find_tool) .. " snapshot -l '" .. shared.diskfile .. "' 2>/dev/null || true"})
+        print("disk      qcow2" .. (snapshots:trim() ~= "" and "\n" .. snapshots or " busy (a guest is running)"))
     else
         print("disk      missing, run xmake build disk")
     end
@@ -154,9 +153,8 @@ on_run(function ()
     if not program then
         os.raise("qemu-system-" .. g.arch .. " is not in PATH")
     end
-    if option.get("fresh") and os.isfile(shared.diskfile) then
-        os.rm(shared.diskfile)
-        print("dropped " .. shared.diskfile)
+    if option.get("fresh") then
+        shared.reset_disk(os, find_tool)
     end
     if not printing and not option.get("dry-run") then
         local started = os.time()
