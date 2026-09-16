@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,33 +17,76 @@ const (
 	serialPort  = "/dev/ttyAMA0"
 	drmRoot     = "/sys/class/drm"
 	poll        = 200 * time.Millisecond
+
+	mmPerInch     = 25.4
+	fallbackDPI   = 100
+	fallbackScale = 0.0
+	okResponse    = "ok"
 )
 
 func main() {
 	notify()
-	connector := connectorPath()
-	if connector == "" {
-		return
-	}
-	last := ""
+	connector := ""
+	applied := ""
+	size := ""
 	mode := ""
 	lastSession := ""
 	for {
-		size, ok := hostSize(connector)
-		if ok && size != last {
-			last = size
-			apply(connector, size)
+		if connector == "" || !exists(filepath.Join(connector, "status")) {
+			connector = connectorPath()
+			if connector == "" {
+				time.Sleep(poll)
+				continue
+			}
+			tell(fmt.Sprintf("tryDisplay: connector %s\n", filepath.Base(connector)))
+			applied = ""
+		}
+		if rule, found, ok := windowRule(connector); ok && rule != applied {
+			applied = rule
+			size = found.timing.size()
+			apply(connector, found, rule)
 		}
 		if current, ok := currentMode(); ok && current != mode {
 			mode = current
 			tell(fmt.Sprintf("tryDisplay: mode %s\n", mode))
+			if mode == size {
+				applied = ""
+			}
 		}
 		if session := currentSession(); session != lastSession {
 			lastSession = session
 			tell(fmt.Sprintf("tryDisplay: session %s\n", session))
+			applied = ""
 		}
 		time.Sleep(poll)
 	}
+}
+
+func windowRule(connector string) (string, display, bool) {
+	edid, err := os.ReadFile(filepath.Join(connector, "edid"))
+	if err != nil {
+		return "", display{}, false
+	}
+	found, ok := preferredDisplay(edid)
+	if !ok {
+		return "", display{}, false
+	}
+	scale := displayScale(found.timing.width, found.timing.height, found.widthMM, found.heightMM)
+	rule, ok := displayRule(outputName(connector), found, scale)
+	return rule, found, ok
+}
+
+func outputName(connector string) string {
+	name := filepath.Base(connector)
+	if index := strings.Index(name, "-"); index >= 0 {
+		name = name[index+1:]
+	}
+	return name
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func currentMode() (string, bool) {
@@ -136,13 +180,111 @@ func hyprlandSockets() []string {
 	return sockets
 }
 
-func apply(connector string, size string) {
+func apply(connector string, found display, rule string) {
 	os.WriteFile(filepath.Join(connector, "status"), []byte("detect"), 0)
-	tell(fmt.Sprintf("tryDisplay: host asked for %s\n", size))
-	if !reloadHyprland() {
+	tell(fmt.Sprintf("tryDisplay: window %s\n", found.timing.size()))
+	response, ok := hyprctl("eval", rule)
+	if !ok {
+		fitConsole(found.timing.width, found.timing.height)
 		restartLy()
+		return
+	}
+	reportCompositor(outputName(connector), found.timing.size())
+	if response != okResponse {
+		tell(fmt.Sprintf("tryDisplay: %s rejected: %s\n", found.timing.size(), response))
 	}
 }
+
+func reportCompositor(output, want string) {
+	response, ok := hyprctl("-j", "monitors")
+	if !ok {
+		return
+	}
+	if message := compositorFill([]byte(response), output, want); message != "" {
+		tell(message)
+	}
+}
+
+func compositorFill(response []byte, output, want string) string {
+	var monitors []struct {
+		Name   string  `json:"name"`
+		Width  int     `json:"width"`
+		Height int     `json:"height"`
+		Scale  float64 `json:"scale"`
+	}
+	if json.Unmarshal(response, &monitors) != nil {
+		return ""
+	}
+	for _, monitor := range monitors {
+		if monitor.Name != output {
+			continue
+		}
+		size := fmt.Sprintf("%dx%d", monitor.Width, monitor.Height)
+		if size == want {
+			return fmt.Sprintf("tryDisplay: compositor %s scale %g\n", size, monitor.Scale)
+		}
+		return fmt.Sprintf("tryDisplay: compositor %s does not fill %s\n", size, want)
+	}
+	return ""
+}
+
+func fitConsole(width, height int) {
+	device, err := os.OpenFile(fbDevice, os.O_RDWR, 0)
+	if err != nil {
+		return
+	}
+	defer device.Close()
+	variables := fbVar{}
+	if !fbRead(device, &variables) {
+		return
+	}
+	if int(variables[fbVisibleWidth]) != width || int(variables[fbVisibleHeight]) != height {
+		variables[fbVisibleWidth] = uint32(width)
+		variables[fbVisibleHeight] = uint32(height)
+		variables[fbOffsetX] = 0
+		variables[fbOffsetY] = 0
+		if !fbWrite(device, &variables) {
+			tell(fmt.Sprintf("tryDisplay: console %s does not fit %dx%d\n", variables.size(), width, height))
+			return
+		}
+		if !fbRead(device, &variables) {
+			return
+		}
+	}
+	tell(fmt.Sprintf("tryDisplay: console %s\n", variables.size()))
+}
+
+func (v fbVar) size() string {
+	return fmt.Sprintf("%dx%d", v[fbVisibleWidth], v[fbVisibleHeight])
+}
+
+func fbRead(device *os.File, variables *fbVar) bool {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, device.Fd(), fbioGetVar, uintptr(unsafe.Pointer(variables)))
+	return errno == 0
+}
+
+func fbWrite(device *os.File, variables *fbVar) bool {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, device.Fd(), fbioPutVar, uintptr(unsafe.Pointer(variables)))
+	return errno == 0
+}
+
+type fbVar [fbWords]uint32
+
+const (
+	fbVisibleWidth = iota
+	fbVisibleHeight
+	fbVirtualWidth
+	fbVirtualHeight
+	fbOffsetX
+	fbOffsetY
+)
+
+const (
+	fbWords    = 40
+	fbioGetVar = 0x4600
+	fbioPutVar = 0x4601
+	fbDevice   = "/dev/fb0"
+)
 
 func restartLy() {
 	units, err := exec.Command("systemctl", "list-units", "--type=service", "--state=active", "--no-legend", "--plain", "--no-pager", "ly@*.service").Output()
@@ -159,18 +301,18 @@ func restartLy() {
 	}
 }
 
-func reloadHyprland() bool {
+func hyprctl(args ...string) (string, bool) {
 	sockets := hyprlandSockets()
 	if len(sockets) == 0 {
-		return false
+		return "", false
 	}
-	command := exec.Command("hyprctl", "reload")
+	command := exec.Command("hyprctl", args...)
 	command.Env = append(os.Environ(),
 		"XDG_RUNTIME_DIR="+filepath.Dir(filepath.Dir(filepath.Dir(sockets[0]))),
 		"HYPRLAND_INSTANCE_SIGNATURE="+filepath.Base(filepath.Dir(sockets[0])),
 	)
-	command.Run()
-	return true
+	response, err := command.CombinedOutput()
+	return strings.TrimSpace(string(response)), err == nil
 }
 
 func notify() {
@@ -197,35 +339,18 @@ func connectorPath() string {
 		}
 		path := filepath.Join(drmRoot, entry.Name())
 		status, err := os.ReadFile(filepath.Join(path, "status"))
-		if err != nil || strings.TrimSpace(string(status)) != "connected" {
+		if err != nil {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(path, "edid")); err != nil {
+		state := strings.TrimSpace(string(status))
+		if state != "connected" && state != "unknown" {
+			continue
+		}
+		edid, err := os.ReadFile(filepath.Join(path, "edid"))
+		if err != nil || len(edid) < 72 {
 			continue
 		}
 		return path
 	}
 	return ""
-}
-
-func hostSize(connector string) (string, bool) {
-	edid, err := os.ReadFile(filepath.Join(connector, "edid"))
-	if err != nil || len(edid) < 72 {
-		return "", false
-	}
-	header := []byte{0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00}
-	for index, byteValue := range header {
-		if edid[index] != byteValue {
-			return "", false
-		}
-	}
-	if edid[54] == 0 && edid[55] == 0 {
-		return "", false
-	}
-	width := int(edid[56]) | int(edid[58]&0xf0)<<4
-	height := int(edid[59]) | int(edid[61]&0xf0)<<4
-	if width == 0 || height == 0 {
-		return "", false
-	}
-	return fmt.Sprintf("%dx%d", width, height), true
 }
