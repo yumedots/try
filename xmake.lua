@@ -495,11 +495,12 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.cp(firstboot, path.join(prov, "firstboot"))
     os.cp(trydisplay, path.join(prov, "tryDisplay"))
     os.cp(path.join(shared.projectdir, "guest/packages.txt"), prov)
+    os.cp(path.join(shared.projectdir, "guest/Xsetup"), path.join(prov, "Xsetup"))
     if not shared.dotfiles or not os.isdir(shared.dotfiles) then
         os.raise("dotfiles source missing or submodule not populated: " .. tostring(shared.dotfiles))
     end
     os.cp(path.join(shared.dotfiles, "*"), path.join(prov, "dotfiles"))
-    os.execv("chmod", {"755", path.join(prov, "firstboot"), path.join(prov, "tryDisplay")})
+    os.execv("chmod", {"755", path.join(prov, "firstboot"), path.join(prov, "tryDisplay"), path.join(prov, "Xsetup")})
     os.cp(path.join(shared.projectdir, "guest/firstBoot.service"), path.join(shared.rootdir, "etc/systemd/system/firstBoot.service"))
     local wants = path.join(shared.rootdir, "etc/systemd/system/multi-user.target.wants")
     os.mkdir(wants)
