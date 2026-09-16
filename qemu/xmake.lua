@@ -98,10 +98,10 @@ on_run(function ()
         print("tarball   missing, run xmake fetch")
     end
     print("rootfs    " .. (os.isfile(path.join(shared.rootdir, "etc/passwd")) and "extracted" or "run xmake build disk"))
-    if os.isfile(shared.rawfile) then
-        print("disk      raw " .. shared.rawfile .. " pending, run xmake build disk to convert")
+    if os.isfile(shared.basefile) and not os.isfile(shared.diskfile) then
+        print("disk      base " .. shared.basefile .. " ready, overlay pending: run xmake build disk")
     elseif os.isfile(shared.diskfile) then
-        local snapshots = os.iorunv(shared.qemu_img(os, find_tool), {"snapshot", "-l", shared.diskfile}):trim()
+        local snapshots = os.iorun(shared.qemu_img(os, find_tool), {"snapshot", "-l", shared.diskfile}):trim()
         print("disk      qcow2" .. (snapshots ~= "" and "\n" .. snapshots or ""))
     else
         print("disk      missing, run xmake build disk")
