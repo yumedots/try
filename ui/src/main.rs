@@ -244,13 +244,6 @@ fn guest_position(
     ))
 }
 
-fn frame_size(viewport: Size<Pixels>) -> (f32, f32) {
-    (
-        viewport.width.to_f64() as f32,
-        viewport.height.to_f64() as f32,
-    )
-}
-
 /*
  * What the guest sent against what the window asked for, so a screen that does not
  * fill the window can be told from one that is a resize behind.
@@ -1136,7 +1129,7 @@ impl Frame {
         if self.settings_open {
             return;
         }
-        if let Some((x, y)) = self.guest_position(position, viewport) {
+        if let Some((x, y)) = guest_position(self.surface, viewport, position) {
             self.send(Input::Move { x, y });
         }
     }
@@ -1158,7 +1151,7 @@ impl Frame {
             _ => return,
         };
         if down {
-            if let Some((x, y)) = self.guest_position(position, viewport) {
+            if let Some((x, y)) = guest_position(self.surface, viewport, position) {
                 self.send(Input::Move { x, y });
             }
         }
@@ -1176,14 +1169,6 @@ impl Frame {
         if up != 0.0 {
             self.send(Input::Wheel { up: up > 0.0 });
         }
-    }
-
-    fn guest_position(
-        &self,
-        position: Point<Pixels>,
-        viewport: Size<Pixels>,
-    ) -> Option<(u32, u32)> {
-        guest_position(self.surface, viewport, position)
     }
 
     fn poll(&mut self) {
@@ -1406,11 +1391,10 @@ impl Render for Frame {
                      * with nothing cropped at all.  `frame_shape` reports the case where a
                      * resize never arrived, which is a guest that did not adopt it.
                      */
-                    let (width, height) = frame_size(viewport);
                     img(ImageSource::Render(image.clone()))
                         .object_fit(ObjectFit::Cover)
-                        .w(px(width))
-                        .h(px(height))
+                        .w(viewport.width)
+                        .h(viewport.height)
                         .into_any_element()
                 }
                 (_, Some(error), _) => div()
@@ -1506,7 +1490,6 @@ mod tests {
     fn the_frame_is_one_guest_pixel_per_device_pixel_and_fills_the_window() {
         let surface = (2560, 1440);
         let viewport = gpui::size(gpui::px(1280.0), gpui::px(720.0));
-        assert_eq!(frame_size(viewport), (1280.0, 720.0));
         assert_eq!(
             guest_position(
                 surface,
@@ -1518,7 +1501,6 @@ mod tests {
         /* a guest of another shape covers the window, cropped evenly, never squeezed */
         let capped = (1390, 1440);
         let wider = gpui::size(gpui::px(1000.0), gpui::px(720.0));
-        assert_eq!(frame_size(wider), (1000.0, 720.0));
         assert_eq!(
             guest_position(
                 capped,

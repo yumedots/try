@@ -87,6 +87,7 @@ impl GuestSurface {
         });
     }
 
+    #[cfg(test)]
     pub fn pixel(&self, x: u32, y: u32, pixel: [u8; 4]) {
         self.write(|pixels, stride, width, height| {
             if x >= width || y >= height {
