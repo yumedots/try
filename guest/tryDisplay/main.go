@@ -33,13 +33,13 @@ func main() {
 	connector := connectorPath()
 	applied := ""
 	lastSession := ""
-	greeter := 0.0
+	greeter := 1.0
 	if _, found, ok := windowRule(connector); ok {
 		if scale := greeterScale(found); scale > 0 {
 			greeter = scale
-			applyGreeterScale(scale)
 		}
 	}
+	applyGreeterScale(greeter)
 	for {
 		if connector == "" || !exists(filepath.Join(connector, "status")) {
 			connector = connectorPath()
@@ -142,6 +142,11 @@ func setGreeterDPI(display, auth string) bool {
 	command.Env = env
 	if _, err := command.CombinedOutput(); err != nil {
 		return false
+	}
+	if exec.Command("pgrep", "-x", "xsettingsd").Run() != nil {
+		daemon := exec.Command("xsettingsd", "-c", xsettingsConfig)
+		daemon.Env = env
+		daemon.Start()
 	}
 	reload := exec.Command("pkill", "-HUP", "-x", "xsettingsd")
 	reload.Env = env
