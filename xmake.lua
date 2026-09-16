@@ -22,9 +22,9 @@ shared.logfile = path.join(shared.builddir, "guest.log")
 shared.statedir = os.getenv("TRY_STATE_DIR") or path.join(shared.projectdir, "state")
 shared.settingsfile = path.join(shared.statedir, "settings")
 shared.diskfile = path.join(shared.statedir, "rootfs.qcow2")
-shared.basefile = path.join(shared.statedir, "rootfs.base.raw")
-shared.basekeyfile = path.join(shared.statedir, "base.key")
-shared.diskbasefile = path.join(shared.statedir, "disk.base")
+shared.diskkeyfile = path.join(shared.statedir, "disk.key")
+shared.resetsnapshot = "provisioned"
+shared.rawfile = path.join(shared.builddir, "rootfs.raw")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
@@ -456,11 +456,20 @@ rm -rf "$parts"
     print("tarball ok " .. actual .. " in " .. (os.time() - started) .. "s")
 end
 
-function shared.base_identity(os)
-    if not os.isfile(shared.basefile) then
-        return ""
+function shared.reset_disk(os, find_tool)
+    if not os.isfile(shared.diskfile) then
+        return false
     end
-    return tostring(os.filesize(shared.basefile)) .. " " .. tostring(os.mtime(shared.basefile))
+    local img = shared.qemu_img(os, find_tool)
+    local listed = os.iorunv("sh", {"-c", img .. " snapshot -l '" .. shared.diskfile .. "' 2>/dev/null || true"})
+    if listed:find(shared.resetsnapshot, 1, true) then
+        os.execv(img, {"snapshot", "-a", shared.resetsnapshot, shared.diskfile})
+        print("reset " .. shared.diskfile .. " to its " .. shared.resetsnapshot .. " snapshot")
+    else
+        os.rm(shared.diskfile)
+        print("dropped " .. shared.diskfile .. ", it carries no " .. shared.resetsnapshot .. " snapshot")
+    end
+    return true
 end
 
 function shared.provision_key(os)
@@ -490,10 +499,8 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.mkdir(shared.cachedir)
     shared.state(os)
     local key = shared.provision_key(os)
-    local basekey = os.isfile(shared.basekeyfile) and io.readfile(shared.basekeyfile) or ""
-    local baseid = shared.base_identity(os)
-    local diskbase = os.isfile(shared.diskbasefile) and io.readfile(shared.diskbasefile):trim() or ""
-    if os.isfile(shared.diskfile) and basekey == key and baseid ~= "" and diskbase == baseid then
+    local diskkey = os.isfile(shared.diskkeyfile) and io.readfile(shared.diskkeyfile) or ""
+    if os.isfile(shared.diskfile) and diskkey == key then
         print("disk kept " .. shared.diskfile)
         return
     end
@@ -549,27 +556,20 @@ function shared.prepare_guest(g, os, find_tool, io)
         os.raise("mke2fs not found, install e2fsprogs")
     end
     local qemu_img = shared.qemu_img(os, find_tool)
-    if basekey ~= key or not os.isfile(shared.basefile) then
-        local started = os.time()
-        print("create " .. shared.basefile .. " " .. shared.disksize)
-        os.rm(shared.basefile)
-        os.execv(qemu_img, {"create", "-f", "raw", shared.basefile, shared.disksize})
-        os.execv(mke2fs, {"-t", "ext4", "-F", "-E", "lazy_itable_init=1,lazy_journal_init=1", "-J", "size=64", "-d", shared.rootdir, shared.basefile})
-        print("base built in " .. (os.time() - started) .. "s")
-        io.writefile(shared.basekeyfile, key)
-    end
-    baseid = shared.base_identity(os)
-    if os.isfile(shared.diskfile) and diskbase ~= baseid then
-        os.rm(shared.diskfile)
-        print("dropped " .. shared.diskfile .. ", it does not sit on this base")
-    end
-    if not os.isfile(shared.diskfile) then
-        local started = os.time()
-        print("overlay " .. shared.basefile .. " -> " .. shared.diskfile)
-        os.execv(qemu_img, {"create", "-f", "qcow2", "-F", "raw", "-b", shared.basefile, shared.diskfile})
-        print("disk ready in " .. (os.time() - started) .. "s")
-    end
-    io.writefile(shared.diskbasefile, baseid)
+    local started = os.time()
+    print("create " .. shared.rawfile .. " " .. shared.disksize)
+    os.rm(shared.rawfile)
+    os.execv(qemu_img, {"create", "-f", "raw", shared.rawfile, shared.disksize})
+    os.execv(mke2fs, {"-t", "ext4", "-F", "-E", "lazy_itable_init=1,lazy_journal_init=1", "-J", "size=64", "-d", shared.rootdir, shared.rawfile})
+    print("raw built in " .. (os.time() - started) .. "s")
+    local convert_started = os.time()
+    print("convert " .. shared.rawfile .. " -> " .. shared.diskfile)
+    os.rm(shared.diskfile)
+    os.execv(qemu_img, {"convert", "-O", "qcow2", "-m", "8", "-W", shared.rawfile, shared.diskfile})
+    os.rm(shared.rawfile)
+    print("disk ready in " .. (os.time() - convert_started) .. "s")
+    os.execv(qemu_img, {"snapshot", "-c", shared.resetsnapshot, shared.diskfile})
+    io.writefile(shared.diskkeyfile, key)
     print("size " .. os.iorunv("sh", {"-c", "ls -lh " .. shared.diskfile .. " | awk '{print $5}'"}):trim())
     print("guest image ready in " .. (os.time() - total) .. "s total")
 end
@@ -588,7 +588,7 @@ on_run(function ()
         print("deleted " .. shared.cachedir)
     else
         print("kept " .. shared.cachedir .. " (tarball + tree, drop with: xmake clean --cache)")
-        print("kept " .. shared.statedir .. " (guest disk + settings, drop with: xmake reset)")
+        print("kept " .. shared.statedir .. " (guest disk + settings, xmake reset rolls the disk back)")
     end
 end)
 set_menu {
