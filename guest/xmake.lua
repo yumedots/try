@@ -52,16 +52,16 @@ on_run(function ()
         os.rm(shared.diskfile)
         print("dropped " .. shared.diskfile)
     end
-    for _, kept in ipairs({shared.tarball, shared.rootdir, shared.settingsfile}) do
+    for _, kept in ipairs({shared.tarball, shared.rootdir, shared.settingsfile, shared.basefile}) do
         if os.exists(kept) then
             print("kept " .. kept)
         end
     end
-    print("next: xmake run (rebuilds the disk from cache, then provisions the guest)")
+    print("next: xmake run (the disk is a fresh overlay on the kept base)")
 end)
 set_menu {
     usage = "xmake reset",
-    description = "Drop the guest disk and keep the cached tarball, tree and saved settings"
+    description = "Drop the guest disk and keep the cached tarball, tree, base image and saved settings"
 }
 
 target("disk")

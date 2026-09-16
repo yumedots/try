@@ -18,12 +18,13 @@ shared.cachedir = path.join(shared.projectdir, ".cache")
 shared.tarball = path.join(shared.cachedir, "archlinuxarm.tar.gz")
 shared.md5file = path.join(shared.cachedir, "archlinuxarm.md5")
 shared.rootdir = path.join(shared.cachedir, "root")
-shared.rawfile = path.join(shared.builddir, "rootfs.raw")
 shared.logfile = path.join(shared.builddir, "guest.log")
 shared.statedir = os.getenv("TRY_STATE_DIR") or path.join(shared.projectdir, "state")
 shared.settingsfile = path.join(shared.statedir, "settings")
 shared.diskfile = path.join(shared.statedir, "rootfs.qcow2")
-shared.provisionstamp = path.join(shared.builddir, "provision.stamp")
+shared.basefile = path.join(shared.statedir, "rootfs.base.raw")
+shared.basekeyfile = path.join(shared.statedir, "base.key")
+shared.diskbasefile = path.join(shared.statedir, "disk.base")
 shared.disksize = "32G"
 shared.dotfiles = os.getenv("HOME") and path.join(os.getenv("HOME"), "dotfiles") or nil
 shared.firstbootdir = path.join(shared.projectdir, "guest/firstBoot")
@@ -455,6 +456,13 @@ rm -rf "$parts"
     print("tarball ok " .. actual .. " in " .. (os.time() - started) .. "s")
 end
 
+function shared.base_identity(os)
+    if not os.isfile(shared.basefile) then
+        return ""
+    end
+    return tostring(os.filesize(shared.basefile)) .. " " .. tostring(os.mtime(shared.basefile))
+end
+
 function shared.provision_key(os)
     local stamp = shared.tarball .. " " .. tostring(os.filesize(shared.tarball)) .. " " .. tostring(os.mtime(shared.tarball))
     local lines = {shared.disksize, stamp}
@@ -482,8 +490,10 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.mkdir(shared.cachedir)
     shared.state(os)
     local key = shared.provision_key(os)
-    local stamp = os.isfile(shared.provisionstamp) and io.readfile(shared.provisionstamp) or ""
-    if os.isfile(shared.diskfile) and stamp == key then
+    local basekey = os.isfile(shared.basekeyfile) and io.readfile(shared.basekeyfile) or ""
+    local baseid = shared.base_identity(os)
+    local diskbase = os.isfile(shared.diskbasefile) and io.readfile(shared.diskbasefile):trim() or ""
+    if os.isfile(shared.diskfile) and basekey == key and baseid ~= "" and diskbase == baseid then
         print("disk kept " .. shared.diskfile)
         return
     end
@@ -534,30 +544,34 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.mkdir(graphical_wants)
     os.execv("ln", {"-sf", "/etc/systemd/system/tryDisplay.service", path.join(graphical_wants, "tryDisplay.service")})
 
-    if os.isfile(shared.diskfile) then
-        print("disk kept " .. shared.diskfile)
-        io.writefile(shared.provisionstamp, key)
-        return
-    end
     local mke2fs = shared.mke2fs(find_tool)
     if not mke2fs then
         os.raise("mke2fs not found, install e2fsprogs")
     end
-    local started = os.time()
-    print("create " .. shared.rawfile .. " " .. shared.disksize)
-    os.rm(shared.rawfile)
     local qemu_img = shared.qemu_img(os, find_tool)
-    os.execv(qemu_img, {"create", "-f", "raw", shared.rawfile, shared.disksize})
-    os.execv(mke2fs, {"-t", "ext4", "-F", "-E", "lazy_itable_init=1,lazy_journal_init=1", "-J", "size=64", "-d", shared.rootdir, shared.rawfile})
-    print("raw built in " .. (os.time() - started) .. "s")
-    local convert_started = os.time()
-    print("convert " .. shared.rawfile .. " -> " .. shared.diskfile)
-    os.execv(qemu_img, {"convert", "-O", "qcow2", "-m", "8", "-W", shared.rawfile, shared.diskfile})
-    os.rm(shared.rawfile)
-    print("disk ready in " .. (os.time() - convert_started) .. "s")
+    if basekey ~= key or not os.isfile(shared.basefile) then
+        local started = os.time()
+        print("create " .. shared.basefile .. " " .. shared.disksize)
+        os.rm(shared.basefile)
+        os.execv(qemu_img, {"create", "-f", "raw", shared.basefile, shared.disksize})
+        os.execv(mke2fs, {"-t", "ext4", "-F", "-E", "lazy_itable_init=1,lazy_journal_init=1", "-J", "size=64", "-d", shared.rootdir, shared.basefile})
+        print("base built in " .. (os.time() - started) .. "s")
+        io.writefile(shared.basekeyfile, key)
+    end
+    baseid = shared.base_identity(os)
+    if os.isfile(shared.diskfile) and diskbase ~= baseid then
+        os.rm(shared.diskfile)
+        print("dropped " .. shared.diskfile .. ", it does not sit on this base")
+    end
+    if not os.isfile(shared.diskfile) then
+        local started = os.time()
+        print("overlay " .. shared.basefile .. " -> " .. shared.diskfile)
+        os.execv(qemu_img, {"create", "-f", "qcow2", "-F", "raw", "-b", shared.basefile, shared.diskfile})
+        print("disk ready in " .. (os.time() - started) .. "s")
+    end
+    io.writefile(shared.diskbasefile, baseid)
     print("size " .. os.iorunv("sh", {"-c", "ls -lh " .. shared.diskfile .. " | awk '{print $5}'"}):trim())
     print("guest image ready in " .. (os.time() - total) .. "s total")
-    io.writefile(shared.provisionstamp, key)
 end
 
 includes("guest")
