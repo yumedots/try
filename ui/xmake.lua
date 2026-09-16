@@ -1,3 +1,5 @@
+local shared = shared
+
 local projectdir = path.join(os.projectdir(), "ui")
 local manifest = path.join(projectdir, "Cargo.toml")
 local binary = path.join(projectdir, "target/debug/try-ui")
@@ -23,6 +25,7 @@ end
 local function run_env()
     local envs = build_env() or {}
     envs.TRY_PROJECT_DIR = shared.projectdir
+    envs.TRY_STATE_DIR = shared.statedir
     return envs
 end
 
@@ -59,6 +62,9 @@ target("ui")
 
 task("run")
 on_run(function ()
+    if shared.qemu_keg(os) then
+        shared.qemu_fetch(os, io)
+    end
     os.execv("xmake", {"build", "disk"}, {envs = run_env()})
     os.execv("xmake", {"build", "ui"}, {envs = build_env()})
     launch(os)
