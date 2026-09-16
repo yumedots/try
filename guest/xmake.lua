@@ -25,10 +25,15 @@ end)
 task("fetch")
 on_run(function ()
     shared.fetch_latest(shared.guest(), os, io, true)
+    if shared.qemu_keg(os) then
+        shared.qemu_fetch(os, io, true)
+    else
+        print("qemu: no virgl bottle on this host, vm uses qemu-system-" .. shared.guest().arch .. " from PATH")
+    end
 end)
 set_menu {
     usage = "xmake fetch",
-    description = "Download the latest Arch Linux ARM tarball into build/"
+    description = "Download the latest Arch Linux ARM tarball and the pinned qemu-virgl bottles"
 }
 
 task("guest")
@@ -38,7 +43,7 @@ on_run(function ()
 end)
 set_menu {
     usage = "xmake guest",
-    description = "Inject guest provisioning and build build/rootfs.qcow2 from the tarball"
+    description = "Inject guest provisioning and build the rootfs.qcow2 disk from the tarball"
 }
 
 task("reset")
@@ -47,16 +52,16 @@ on_run(function ()
         os.rm(shared.diskfile)
         print("dropped " .. shared.diskfile)
     end
-    for _, kept in ipairs({shared.tarball, shared.rootdir}) do
+    for _, kept in ipairs({shared.tarball, shared.rootdir, shared.settingsfile}) do
         if os.exists(kept) then
             print("kept " .. kept)
         end
     end
-    print("next: xmake vm (rebuilds the disk from cache, then provisions the guest)")
+    print("next: xmake run (rebuilds the disk from cache, then provisions the guest)")
 end)
 set_menu {
     usage = "xmake reset",
-    description = "Drop the guest disk and keep the cached tarball and tree"
+    description = "Drop the guest disk and keep the cached tarball, tree and saved settings"
 }
 
 target("disk")

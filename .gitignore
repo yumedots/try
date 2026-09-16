@@ -3,4 +3,5 @@
 build/
 home/
 .cache/
+state/
 ui/target/
