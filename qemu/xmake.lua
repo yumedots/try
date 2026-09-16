@@ -161,7 +161,7 @@ on_run(function ()
     if not printing and not option.get("dry-run") then
         local started = os.time()
         local had_disk = os.isfile(shared.diskfile)
-        if not had_disk or not os.isfile(shared.tarball) then
+        if not had_disk or not os.isfile(shared.tarball) or os.filesize(shared.tarball) == 0 then
             shared.fetch_latest(g, os, io)
         end
         shared.prepare_guest(g, os, find_tool, io)
