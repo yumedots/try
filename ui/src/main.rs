@@ -348,6 +348,45 @@ fn opening_size(wanted: WindowSize, display: (u32, u32), ready: bool) -> WindowS
     }
 }
 
+/*
+ * The guest re-reads its EDID and re-applies its mode for every size it is told, so a
+ * drag has to arrive as one request at the size the window lands on, not one per frame
+ * the window passed through: a stream of them leaves the guest's desktop tracing a
+ * console that is still changing modes.
+ */
+const RESIZE_SETTLE: Duration = Duration::from_millis(150);
+
+struct Settled {
+    latest: Option<WindowSize>,
+    since: Option<Instant>,
+}
+
+impl Settled {
+    fn new() -> Self {
+        Self {
+            latest: None,
+            since: None,
+        }
+    }
+
+    fn offer(&mut self, size: WindowSize, now: Instant) -> Option<WindowSize> {
+        if self.latest != Some(size) {
+            self.latest = Some(size);
+            self.since = Some(now);
+            return None;
+        }
+        if self
+            .since
+            .map(|since| now.duration_since(since) >= RESIZE_SETTLE)
+            .unwrap_or(false)
+        {
+            self.since = None;
+            return Some(size);
+        }
+        None
+    }
+}
+
 fn is_settings_toggle(keystroke: &Keystroke) -> bool {
     (keystroke.modifiers.platform || keystroke.modifiers.control) && keystroke.key == ","
 }
@@ -933,6 +972,7 @@ async fn connect_display(
     println!("connected to QEMU D-Bus console {console_id}");
     let mut ready = false;
     let mut requested = None;
+    let mut settle = Settled::new();
     let mut polled = Instant::now();
     loop {
         if !ready && polled.elapsed() >= POLL_INTERVAL {
@@ -996,14 +1036,16 @@ async fn connect_display(
         let wanted = *window.lock().unwrap();
         if let Some(size) = wanted {
             let size = opening_size(size, display, ready);
-            let (width, height) = clamp_to_display((size.width, size.height), display);
-            if requested != Some(size) {
-                console
-                    .set_ui_info(size.width_mm, size.height_mm, 0, 0, width, height)
-                    .await
-                    .map_err(|error| format!("could not resize the QEMU display: {error}"))?;
-                println!("requested guest display resize: {width}x{height}");
-                requested = Some(size);
+            if let Some(size) = settle.offer(size, Instant::now()) {
+                let (width, height) = clamp_to_display((size.width, size.height), display);
+                if requested != Some(size) {
+                    console
+                        .set_ui_info(size.width_mm, size.height_mm, 0, 0, width, height)
+                        .await
+                        .map_err(|error| format!("could not resize the QEMU display: {error}"))?;
+                    println!("requested guest display resize: {width}x{height}");
+                    requested = Some(size);
+                }
             }
         }
         if let Some(status) = qemu_stopped(&qemu) {
@@ -1657,6 +1699,31 @@ mod tests {
             guest_position((0, 0), taller, gpui::point(gpui::px(0.0), gpui::px(0.0))),
             None
         );
+    }
+
+    #[test]
+    fn a_drag_sends_one_resize_at_the_size_it_lands_on() {
+        let mut settle = Settled::new();
+        let start = Instant::now();
+        for step in 0..39u32 {
+            let viewport = gpui::size(gpui::px(800.0 + step as f32 * 4.0), gpui::px(600.0));
+            let size = window_size(viewport, 2.0);
+            assert_eq!(
+                settle.offer(size, start + Duration::from_millis(u64::from(step) * 10)),
+                None,
+                "a drag asked for a resize mid-flight"
+            );
+        }
+        let landed = window_size(gpui::size(gpui::px(956.0), gpui::px(600.0)), 2.0);
+        assert_eq!(
+            settle.offer(landed, start + Duration::from_millis(400)),
+            None
+        );
+        assert_eq!(
+            settle.offer(landed, start + Duration::from_millis(400) + RESIZE_SETTLE),
+            Some(landed)
+        );
+        assert_eq!(settle.offer(landed, start + Duration::from_secs(4)), None);
     }
 
     #[test]
