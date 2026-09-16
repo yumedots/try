@@ -62,14 +62,9 @@ target("ui")
 
 task("run")
 on_run(function ()
-    if shared.qemu_keg(os) then
-        shared.qemu_fetch(os, io)
-    end
-    os.execv("xmake", {"build", "disk"}, {envs = run_env()})
-    os.execv("xmake", {"build", "ui"}, {envs = build_env()})
-    launch(os)
+    os.execv("xmake", {"vm"})
 end)
 set_menu {
     usage = "xmake run",
-    description = "Build and launch the GPUI application"
+    description = "Boot the guest in the pinned QEMU window"
 }

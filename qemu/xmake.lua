@@ -11,11 +11,17 @@ local function qemu_config(option, os, io, program)
     }
 end
 
-local function qemu_args(option, os, config)
+local function qemu_args(option, os, config, io)
     local g = shared.guest()
     local mac = os.host() == "macosx"
     local accel = mac and "hvf" or "kvm"
     local gl = not option.get("no-gl") and (not config.bridge or option.get("gl"))
+    local width, height = option.get("width"), option.get("height")
+    if not width or not height then
+        local screen_width, screen_height = shared.host_display(os, io)
+        width = width or screen_width
+        height = height or screen_height
+    end
     local machine = "virt,accel=" .. accel .. ",highmem=on"
     if config.virtualization then
         machine = machine .. ",virtualization=on"
@@ -30,7 +36,7 @@ local function qemu_args(option, os, config)
         "-append", "root=/dev/vda rw console=tty0 console=ttyAMA0",
         "-drive", "if=virtio,format=qcow2,file=" .. shared.diskfile,
         "-device", (gl and "virtio-gpu-gl-pci" or "virtio-gpu-pci") ..
-            ",xres=" .. (option.get("width") or "2560") .. ",yres=" .. (option.get("height") or "1440"),
+            ",xres=" .. width .. ",yres=" .. height,
         "-device", "virtio-rng-pci",
         "-device", "qemu-xhci",
         "-device", "usb-kbd",
@@ -51,7 +57,8 @@ local function qemu_args(option, os, config)
     if config.bridge then
         table.join2(argv, {"-display", "dbus,gl=" .. (gl and "on" or "off")})
     elseif mac then
-        table.join2(argv, {"-display", gl and "cocoa,gl=es,show-cursor=on" or "cocoa,show-cursor=on,zoom-to-fit=on"})
+        table.join2(argv, {"-display", gl and "cocoa,gl=es,show-cursor=on,zoom-to-fit=on" or
+            "cocoa,show-cursor=on,zoom-to-fit=on"})
     else
         table.join2(argv, {"-display", gl and "gtk,gl=on" or "gtk"})
     end
@@ -102,13 +109,35 @@ on_run(function ()
     print("dotfiles  " .. (shared.dotfiles or "none") .. " -> baked into disk")
     print("log       " .. shared.logfile)
     if program and os.isfile(shared.diskfile) then
-        print("run       " .. program .. " " .. table.concat(qemu_args(option, os, qemu_config(option, os, io, program)), " "))
+        print("run       " .. program .. " " .. table.concat(qemu_args(option, os, qemu_config(option, os, io, program), io), " "))
     end
 end)
 set_menu {
     usage = "xmake doctor",
     description = "Show host, tools, tarball, disk, baked dotfiles and snapshots"
 }
+
+function shared.host_display(os, io)
+    local cached = path.join(shared.cachedir, "hostDisplay")
+    if os.isfile(cached) then
+        local text = io.readfile(cached)
+        local width, height = text:match("(%d+)x(%d+)")
+        if width then
+            return tonumber(width), tonumber(height)
+        end
+    end
+    local width, height = 2560, 1440
+    for _, line in ipairs(os.iorunv("system_profiler", {"SPDisplaysDataType"}):split("\n")) do
+        local foundWidth, foundHeight = line:match("Resolution:%s*(%d+)%s*x%s*(%d+)")
+        if foundWidth then
+            width, height = tonumber(foundWidth), tonumber(foundHeight)
+            break
+        end
+    end
+    os.mkdir(shared.cachedir)
+    io.writefile(cached, width .. "x" .. height)
+    return width, height
+end
 
 task("vm")
 on_run(function ()
@@ -138,14 +167,14 @@ on_run(function ()
         shared.prepare_guest(g, os, find_tool, io)
         if not had_disk then
             print("disk setup in " .. (os.time() - started) .. "s")
-            print("first boot: the guest installs its packages for ~2 min, ly appears after that")
+            print("first boot: the guest installs its packages for ~2 min, the login screen appears after that")
         end
     end
     if not os.isfile(path.join(shared.rootdir, g.kernel)) then
         os.raise("guest kernel missing, run: xmake build disk")
     end
     local config = qemu_config(option, os, io, program)
-    local argv = qemu_args(option, os, config)
+    local argv = qemu_args(option, os, config, io)
     if printing then
         print("program=" .. program)
         for _, value in ipairs(argv) do
@@ -167,8 +196,8 @@ set_menu {
     usage = "xmake vm [options]",
     description = "Boot the guest: virtio-gpu-gl window, or --bridge for the GPUI display",
     options = {
-        {nil, "width", "kv", "2560", "Guest screen width"},
-        {nil, "height", "kv", "1440", "Guest screen height"},
+        {nil, "width", "kv", nil, "Guest screen width, defaults to the host screen"},
+        {nil, "height", "kv", nil, "Guest screen height, defaults to the host screen"},
         {nil, "mem", "kv", nil, "Guest RAM, defaults to the saved setting"},
         {nil, "cpus", "kv", nil, "Guest cores, defaults to the saved setting"},
         {nil, "bridge", "k", nil, "Export the display over D-Bus for the GPUI window instead of opening one"},
