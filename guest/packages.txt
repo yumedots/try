@@ -19,3 +19,8 @@ ttf-hack-nerd
 noto-fonts
 fastfetch
 terminus-font
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-utils

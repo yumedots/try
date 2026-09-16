@@ -534,29 +534,30 @@ func waitForNetwork() error {
 	return fmt.Errorf("network route did not become available")
 }
 
+func pacmanConf(data []byte) []byte {
+	parallel := regexp.MustCompile(`(?m)^#?\s*ParallelDownloads\s*=.*$`)
+	updated := parallel.ReplaceAll(data, []byte("ParallelDownloads = 10"))
+	ignore := regexp.MustCompile(`(?m)^#?\s*IgnorePkg\s*=.*$`)
+	replaced := false
+	return ignore.ReplaceAllFunc(updated, func(match []byte) []byte {
+		if replaced {
+			return []byte("# " + string(match))
+		}
+		replaced = true
+		return []byte("IgnorePkg = linux-aarch64")
+	})
+}
+
 func configurePacman() error {
 	path := "/etc/pacman.conf"
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read pacman.conf: %w", err)
 	}
-	parallel := regexp.MustCompile(`(?m)^#?\s*ParallelDownloads\s*=.*$`)
-	updated := parallel.ReplaceAll(data, []byte("ParallelDownloads = 10"))
+	updated := pacmanConf(data)
 	if !bytes.Equal(data, updated) {
 		if err := os.WriteFile(path, updated, 0644); err != nil {
 			return fmt.Errorf("write pacman.conf: %w", err)
-		}
-	}
-	mirrorPath := "/etc/pacman.d/mirrorlist"
-	mirrorData, err := os.ReadFile(mirrorPath)
-	if err != nil {
-		return fmt.Errorf("read mirrorlist: %w", err)
-	}
-	mirror := "Server = http://ca.us.mirror.archlinuxarm.org/$arch/$repo"
-	if !strings.Contains(string(mirrorData), mirror) {
-		updatedMirror := append([]byte(mirror+"\n"), mirrorData...)
-		if err := os.WriteFile(mirrorPath, updatedMirror, 0644); err != nil {
-			return fmt.Errorf("write mirrorlist: %w", err)
 		}
 	}
 	if _, err := os.Stat("/etc/pacman.d/gnupg/pubring.gpg"); os.IsNotExist(err) {
