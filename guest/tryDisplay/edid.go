@@ -24,6 +24,12 @@ const (
 	fallbackDPI   = 100
 	fallbackScale = 0.0
 
+	densePPI        = 200.0
+	fractionalPPI   = 140.0
+	unitScale       = 1.0
+	fractionalScale = 1.5
+	denseScale      = 2.0
+
 	displayIDTag       = 0x70
 	displayIDTimingTag = 0x03
 	timingBlock        = 20
@@ -206,7 +212,23 @@ func displayScale(width, height, widthMM, heightMM int) float64 {
 	if diagonal <= 0 {
 		return fallbackScale
 	}
-	return cleanScale(width, height, math.Hypot(float64(width), float64(height))/diagonal/logicalDPI)
+	return cleanScale(width, height, requestedScale(math.Hypot(float64(width), float64(height))/diagonal))
+}
+
+/*
+ * A resize asks for the scale the window's density reads as, not a scale that
+ * tracks it pixel for pixel: the desktop is laid out once per scale, so a
+ * window that grows gets room to show more instead of rescaling everything.
+ */
+func requestedScale(pixelsPerInch float64) float64 {
+	switch {
+	case pixelsPerInch > densePPI:
+		return denseScale
+	case pixelsPerInch > fractionalPPI:
+		return fractionalScale
+	default:
+		return unitScale
+	}
 }
 
 func cleanScale(width, height int, requested float64) float64 {
