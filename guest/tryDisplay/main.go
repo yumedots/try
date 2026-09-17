@@ -37,6 +37,7 @@ func main() {
 	connector := connectorPath()
 	applied := ""
 	lastSession := ""
+	background := false
 	greeter := 1.0
 	if _, found, ok := windowRule(connector); ok {
 		if scale := greeterScale(found); scale > 0 {
@@ -67,6 +68,10 @@ func main() {
 			lastSession = session
 			applied = ""
 			tell(fmt.Sprintf("tryDisplay: session %s\n", session))
+			if session == "wayland" && !background {
+				background = true
+				go applyBackgroundTone()
+			}
 		}
 		select {
 		case <-changes:
@@ -281,15 +286,12 @@ func compositorFill(response []byte, output, want string) string {
 }
 
 func hyprctl(args ...string) (string, bool) {
-	sockets := hyprlandSockets()
-	if len(sockets) == 0 {
+	env, ok := sessionEnv()
+	if !ok {
 		return "", false
 	}
 	command := exec.Command("hyprctl", args...)
-	command.Env = append(os.Environ(),
-		"XDG_RUNTIME_DIR="+filepath.Dir(filepath.Dir(filepath.Dir(sockets[0]))),
-		"HYPRLAND_INSTANCE_SIGNATURE="+filepath.Base(filepath.Dir(sockets[0])),
-	)
+	command.Env = env
 	response, err := command.CombinedOutput()
 	return strings.TrimSpace(string(response)), err == nil
 }
