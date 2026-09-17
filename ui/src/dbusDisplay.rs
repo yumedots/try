@@ -79,7 +79,7 @@ pub trait UiInfo {
 impl Listener {
     pub(crate) fn replace_surface(&mut self, scanout: Scanout) {
         if scanout.data.is_empty() {
-            return self.handed_frame();
+            return self.console_frame(scanout.width, scanout.height);
         }
         let pixels = pixels_to_rgba(
             scanout.width,
@@ -146,6 +146,25 @@ impl Listener {
                 .copy_from_slice(&updated[source_start..source_start + width as usize * 4]);
         }
         self.send_frame();
+    }
+
+    /*
+     * A console frame with nothing in it: the pixels are not here because they are either
+     * already in a surface of ours, or in a frame the console had to make that size.  It is
+     * the console's own size, so a ring that is not that size is a ring the console cannot
+     * write into, and it is made that size now - which is what keeps the frames on either
+     * side of a mode change off the socket.
+     */
+    fn console_frame(&mut self, width: u32, height: u32) {
+        let mut ring = self.ring.lock().unwrap();
+
+        if ring.size() == (width, height) {
+            drop(ring);
+            return self.handed_frame();
+        }
+        ring.rebuild(width, height);
+        drop(ring);
+        let _ = self.events.send(Event::Surface);
     }
 
     /*
@@ -245,6 +264,33 @@ mod tests {
             listener.ring.lock().unwrap().size(),
             (96, 64),
             "the frame went on being the size the console had stopped using"
+        );
+        assert!(frames.try_iter().count() > 0);
+    }
+
+    #[test]
+    fn a_console_frame_at_another_size_makes_the_ring_that_size() {
+        let (mut listener, frames) = listener();
+        listener.replace_surface(Scanout {
+            width: 64,
+            height: 48,
+            stride: 64 * 4,
+            format: BGRX,
+            data: frame(64, 48, 0x20),
+        });
+        listener.ring.lock().unwrap().take_request();
+        listener.console_frame(64, 48);
+        assert_eq!(
+            listener.ring.lock().unwrap().size(),
+            (64, 48),
+            "a frame that landed in a surface of ours was taken for the console resizing"
+        );
+
+        listener.console_frame(96, 64);
+        assert_eq!(listener.ring.lock().unwrap().size(), (96, 64));
+        assert!(
+            listener.ring.lock().unwrap().take_request().is_some(),
+            "the console was never given a surface of the size it is now"
         );
         assert!(frames.try_iter().count() > 0);
     }

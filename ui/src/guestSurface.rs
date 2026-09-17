@@ -14,6 +14,7 @@ const DARK: u8 = 0x28;
 const LIGHT: u8 = 0x50;
 const MARKER: [u8; 4] = [0x30, 0x30, 0xff, 0xff];
 
+#[derive(Clone)]
 pub struct GuestSurface {
     buffer: CVPixelBuffer,
     width: u32,
