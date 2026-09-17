@@ -140,3 +140,51 @@ usable. To put it back:
   filter ignores occlusion). Renderer tests run headless through
   `gpui_apple::metal_renderer::MetalHeadlessRenderer` — that is how the caller-owned surface
   path is checked without a VM.
+
+## Open: the flicker while the window is being resized (2026-09-17)
+
+Symptom, as reported: the picture alternates between the guest's desktop and a flat colour,
+worst on the size the window opens at, and it stops once the window has been resized by hand.
+
+What the logs show. The window's size changes over and over on its own, always downwards
+(`guest sent 2560x1440 for a 2556x1438 window`, then `2548x1434`, `2542x1432`, … down to
+`1826x1328`, both the width and the height shrinking, and later only the width). The guest's
+mode chases it at a lag — `2560x1440` to `2520x1420` to `2396x1328` — so three re-modes sit
+under a window that moved some eighty times. Each re-mode rebuilds the EDID, the kernel mode
+and Hyprland's output, and Hyprland paints its own background while it does: that is the flat
+colour. Each window size change also re-arms the blur hold, so the picture is being softened
+and sharpened continuously on top of that.
+
+What was ruled out.
+- The blur does not tint what it blurs (`a_blurred_layer_keeps_the_colour_it_was_given`,
+  the Metal headless renderer, a uniform colour through a 28 px layer filter: ≤2 levels a
+  channel).
+- The window's frames do not alternate between the socket path and the surface path: one
+  `from image` line in twenty thousand frames.
+- The pipeline is not short of rate: 120 fps sustained (p50 8.30 ms) with the guest animating.
+- The guest's own services are not restarting (Hyprland and tryDisplay both `NRestarts=0`).
+
+What moves the window is the hand: the user drags a corner with the mouse (no window manager
+in play), and the app never resizes it itself (`PlatformWindow::resize` is never called), so
+the walk is a drag with a few releases in it — and each release is one ask, so one re-mode,
+which is the flash the drag is supposed to hide under the blur.
+
+Still not explained: at the size the window opens at (1280x720 points, 2560x1440 device
+pixels) the user sees the picture flicker fast between blue and orange, and the first drag
+stops it.  What a boot at that size looks like from here, with nothing touching the window:
+
+- the window's content never changes: 580 captures at ~116 Hz (a ScreenCaptureKit window
+  filter, the window presenting at 120), mean 23.1-23.5 all the way, not one frame with more
+  than 40% of its sample cells moving;
+- the guest is not re-moding: `hyprctl monitors` twice, six seconds apart, both
+  `2560x1440@120.01300`;
+- the flat colour a rebuilding compositor would paint is not orange: `misc:background_color`
+  is `4279308561` = `0xFF111111`, and `set: false`, so it is Hyprland's own default.
+
+So neither a mode loop nor Hyprland's background is what the two colours are.  A hue flip of
+unchanged content is what a channel-order difference looks like (a blue desktop read as BGRA
+when it is RGBA comes back warm), which would mean two renderings of the same frame with
+different channel order - and this capture says the window is only ever showing one of them.
+Next: catch it from the user's side while it is happening (a `screencapture` of the window at
+its rect, which keeps the colour, unlike the window-filter harness), and ask whether the
+window is flickering on screen at a boot where the capture says the content did not move.
