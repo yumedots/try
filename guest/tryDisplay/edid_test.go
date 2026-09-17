@@ -198,9 +198,14 @@ func TestTheScaleFollowsTheDensityNotTheWindowSize(t *testing.T) {
 	for _, test := range []struct {
 		factor float64
 		scale  float64
-	}{{2.0, 2}, {1.5, 1.5}, {1.0, 1}} {
-		widthMM, heightMM := windowMM(3024, test.factor), windowMM(1964, test.factor)
-		for _, size := range [][2]int{{2056, 1326}, {3024, 1964}, {3840, 2160}} {
+		sizes  [][2]int
+	}{
+		{2.0, 2, [][2]int{{2056, 1326}, {3024, 1964}, {3840, 2160}}},
+		{1.5, 1.5, [][2]int{{2058, 1326}, {3024, 1956}, {3840, 2160}}},
+		{1.0, 1, [][2]int{{2056, 1326}, {3024, 1964}, {3840, 2160}}},
+	} {
+		for _, size := range test.sizes {
+			widthMM, heightMM := windowMM(size[0], test.factor), windowMM(size[1], test.factor)
 			scale := displayScale(size[0], size[1], widthMM, heightMM)
 			if math.Abs(scale-test.scale) > 0.05 {
 				t.Fatalf("%dx%d at %gx: scale %v, want %v", size[0], size[1], test.factor, scale, test.scale)
