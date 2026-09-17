@@ -1,3 +1,7 @@
+## Skills
+
+The first time you work here, read every skill in `.agents/skills/` (one `SKILL.md` per folder). Before starting any task, re-read the matching skill for that task's scope, and follow all of them strictly. They are binding instructions, not optional reference.
+
 # Rules
 
 Do not write comments in code
