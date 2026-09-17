@@ -1,9 +1,16 @@
 use async_std::task;
 use std::{
-    path::PathBuf, sync::{mpsc::{Receiver, Sender}, Mutex, OnceLock}, time::{Duration, Instant},
+    collections::HashMap,
+    path::PathBuf,
+    sync::{mpsc::{Receiver, Sender}, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 use crate::bridge::Event;
-use crate::dbusDisplay::{ConsoleProxy, DisplayListener, Listener, Scanout, Update, VMProxy};
+use crate::dbusDisplay::{
+    ConsoleProxy, DisplayListener, Listener, Scanout, UiInfoProxy, Update, VMProxy,
+};
+use crate::panel::refresh_rate;
+use zbus::zvariant::Value;
 use crate::geometry::{clamp_to_display, opening_size};
 use crate::input::{send_button, Input, KeyboardProxy, MouseProxy, WHEEL_DOWN, WHEEL_UP};
 use crate::qemu::{qemu_stopped, Qemu};
@@ -138,6 +145,12 @@ pub(crate) async fn connect_display(
         .build()
         .await
         .map_err(|error| format!("could not open the QEMU mouse: {error}"))?;
+    let ui_info = UiInfoProxy::builder(&connection)
+        .path(console_path)
+        .map_err(|error| format!("could not create the QEMU UI info path: {error}"))?
+        .build()
+        .await
+        .map_err(|error| format!("could not open the QEMU UI info: {error}"))?;
     let (qemu_stream, listener_stream) = std::os::unix::net::UnixStream::pair()
         .map_err(|error| format!("could not create the QEMU display socket: {error}"))?;
     console
@@ -165,6 +178,7 @@ pub(crate) async fn connect_display(
     let mut ready = false;
     let mut requested = None;
     let mut polled = Instant::now();
+    let panel = refresh_rate();
     loop {
         if !ready && polled.elapsed() >= POLL_INTERVAL {
             polled = Instant::now();
@@ -245,11 +259,22 @@ pub(crate) async fn connect_display(
             let size = opening_size(size, display, ready);
             if landed && requested != Some(size) {
                 let (width, height) = clamp_to_display((size.width, size.height), display);
-                console
-                    .set_ui_info(size.width_mm, size.height_mm, 0, 0, width, height)
+                let mut info = HashMap::new();
+
+                info.insert("width_mm", Value::U16(size.width_mm));
+                info.insert("height_mm", Value::U16(size.height_mm));
+                info.insert("xoff", Value::I32(0));
+                info.insert("yoff", Value::I32(0));
+                info.insert("width", Value::U32(width));
+                info.insert("height", Value::U32(height));
+                if panel != 0 {
+                    info.insert("refresh_rate", Value::U32(panel));
+                }
+                ui_info
+                    .apply(info)
                     .await
                     .map_err(|error| format!("could not resize the QEMU display: {error}"))?;
-                println!("requested guest display resize: {width}x{height}");
+                println!("requested guest display resize: {width}x{height} at {panel} millihertz");
                 requested = Some(size);
             }
         }

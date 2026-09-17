@@ -31,6 +31,7 @@ mod frameView;
 mod guestSurface;
 #[allow(non_snake_case)]
 mod mouseButtons;
+mod panel;
 #[allow(non_snake_case)]
 mod surfacePort;
 #[allow(non_snake_case)]

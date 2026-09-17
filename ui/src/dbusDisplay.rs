@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{mpsc::Sender, Mutex};
 use crate::bridge::Event;
 use crate::surfaceRing::SharedRing;
@@ -56,16 +57,22 @@ pub trait Console {
     fn register_listener(&self, listener: zbus::zvariant::Fd<'_>) -> zbus::Result<()>;
 
     fn set_surface(&self, surface: &str) -> zbus::Result<()>;
+}
 
-    #[zbus(name = "SetUIInfo")]
-    fn set_ui_info(
+/*
+ * The console's UI info, as a dictionary: `Apply` merges the keys it is given into what
+ * the console already holds, which is the only way to say the panel's refresh rate -
+ * `SetUIInfo` carries no such key and clears the one that is there.
+ */
+#[zbus::proxy(
+    default_service = "org.qemu",
+    interface = "org.qemu.Display1.UIInfo",
+    default_path = "/org/qemu/Display1/Console_0"
+)]
+pub trait UiInfo {
+    fn apply(
         &self,
-        width_mm: u16,
-        height_mm: u16,
-        xoff: i32,
-        yoff: i32,
-        width: u32,
-        height: u32,
+        ui_info: HashMap<&str, zbus::zvariant::Value<'_>>,
     ) -> zbus::Result<()>;
 }
 
