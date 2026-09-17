@@ -69,7 +69,7 @@ impl GuestSurface {
             for x in 0..self.width {
                 let pixel = if x < PATTERN_MARKER {
                     MARKER
-                } else if (x / PATTERN_CELL + parity as u32) % 2 == 0 {
+                } else if (x / PATTERN_CELL + parity as u32).is_multiple_of(2) {
                     [DARK, DARK, DARK, 0xff]
                 } else {
                     [LIGHT, LIGHT, LIGHT, 0xff]
