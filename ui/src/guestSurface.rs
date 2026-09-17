@@ -140,6 +140,54 @@ mod tests {
     }
 
     #[test]
+    fn the_content_survives_a_blurred_layer() {
+        use gpui::{point, px, size, Bounds, ContentMask, Filter, ScaledPixels};
+
+        let surface = GuestSurface::new(64, 64).unwrap();
+        surface.fill();
+        let mut renderer = MetalHeadlessRenderer::new();
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(64.), px(64.)));
+        let scaled: Bounds<ScaledPixels> = bounds.scale(1.0);
+
+        let mut blurred = Scene::default();
+        blurred.push_filter(
+            scaled.dilate(ScaledPixels(28.0 * 3.0)),
+            scaled.center(),
+            scaled,
+            Filter {
+                blur: 28.0,
+                ..Default::default()
+            },
+        );
+        blurred.insert_primitive(PaintSurface {
+            order: 1,
+            bounds: scaled,
+            content_mask: ContentMask { bounds }.scale(1.0),
+            image_buffer: surface.buffer().clone(),
+        });
+        blurred.pop_filter();
+
+        let image = renderer
+            .render_scene_to_image(&blurred, size(DevicePixels(64), DevicePixels(64)))
+            .unwrap();
+        let (mut opaque, mut sum) = (0u32, 0u32);
+        for pixel in image.pixels() {
+            if pixel.0[3] == 0xff {
+                opaque += 1;
+            }
+            sum += u32::from(pixel.0[0]);
+        }
+        let mean = sum / (image.width() * image.height());
+        println!("blurred frame: {opaque} opaque pixels, mean {mean}");
+        assert!(
+            opaque == image.width() * image.height(),
+            "a blurred layer dropped the content: {opaque} of {} pixels are opaque",
+            image.width() * image.height()
+        );
+        assert!(mean > 0x20, "a blurred layer came back empty: mean {mean}");
+    }
+
+    #[test]
     fn the_window_draws_the_callers_buffer() {
         let surface = GuestSurface::new(64, 64).unwrap();
         surface.fill();
