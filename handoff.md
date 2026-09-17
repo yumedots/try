@@ -66,16 +66,35 @@ Measured (debug build, 2560x1440):
 not the render. QEMU's zero-copy D-Bus path (`dmabuf`) is Linux-only, so macOS always falls
 back to the readback.
 
-### The plan (agreed, not written yet)
+### The plan
 
-1. **QEMU half**: let the client give QEMU a buffer — a `SetSurface(iosurface_id, stride)`
-   method on `org.qemu.Display1.Console` (`ui/dbus-display1.xml` + `ui/dbus-console.c`), and
-   in `dbus_gl_surface_read()` `IOSurfaceLookup` + lock that surface and `glReadPixels`
-   *into* it instead of into the software `DisplaySurface`; then send a **tiny ping**
-   (an `Update` with no payload, or a new Listener call) instead of the pixels.
+1. **QEMU half — written and verified, uncommitted in `~/qemu`.** `SetSurface(surface)` on
+   `org.qemu.Display1.Console` (`ui/dbus-display1.xml` + `ui/dbus-console.c`), and in the
+   listener `dbus_gl_surface_target` the scanout is read with `glReadPixels` straight into the
+   client's surface instead of the software `DisplaySurface`; the frame then goes over as the
+   geometry with an **empty** `Scanout`/`Update` payload. The surface must be exactly the
+   console's size (a mismatch falls back to sending pixels); a handoff is read whole once and
+   the damage rects patch it after that, so a handed surface is always the whole current frame;
+   `SetSurface ""` drops back to pixels. The `IOSurface` framework is linked on darwin.
+
+   **Not by id: `IOSurfaceLookup` does not work across processes on macOS 26**, with or without
+   `kIOSurfaceIsGlobal` (measured both ways, two plain processes, surfaces alive). What works:
+   the client publishes the surface's mach port with `bootstrap_register(bootstrap_port, name,
+   IOSurfaceCreateMachPort(surface))` and QEMU does `bootstrap_look_up` +
+   `IOSurfaceLookupFromMachPort`. That is why the method takes a **name string**, not an id.
+
+   Verified end to end against the current app as the listener (it is the only client that
+   registers one, and without a listener QEMU never touches a scanout at all): `build/trysurf.c`
+   creates a 2560x1440 BGRA surface, fills it `0xff`, publishes it and prints a checksum every
+   second; `gdbus call --session --dest org.qemu --object-path /org/qemu/Display1/Console_0
+   --method org.qemu.Display1.Console.SetSurface try.probe.<pid>` replaces the fill with the
+   guest's picture (`top 13 13 13`, and a second surface is filled whole on handoff). Rebuild
+   with `ninja -C ~/qemu/buildLocal qemu-system-aarch64`, install with `/tmp/localqemu.sh`.
 2. **App half**: a ring of caller-owned `CVPixelBuffer`s (the GPU still holds the one being
-   drawn, so locking it fails — that is why it needs ≥2), one memcpy per frame, drawn with
-   `guestSurface()` / `gpui::surface()` — no `RenderImage`, no upload.
+   drawn, so locking it fails — that is why it needs ≥2), **each published under its own
+   bootstrap name** (the id route above is dead), drawn with `guestSurface()` / `gpui::surface()`
+   — no `RenderImage`, no upload. Note the ring only works because QEMU keeps a handed surface
+   whole; the app must not read a surface until the ping for it arrives.
 3. **Best case after that**: drop the readback too — draw the guest's scanout *into* that
    IOSurface on the GPU. ANGLE has `EGL_ANGLE_iosurface_client_buffer` (an EGL pbuffer from
    an IOSurface) but it is a draft aimed at iOS: **verify it on macOS before relying on it.**
