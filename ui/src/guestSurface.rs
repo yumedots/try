@@ -269,6 +269,43 @@ mod tests {
         assert!(mean > 0x20, "a blurred layer came back empty: mean {mean}");
     }
 
+    /*
+     * The blur holds the whole window while the guest re-modes behind it, so a filter that
+     * tints what it blurs tints the entire window for as long as the hand is on the corner.
+     * A blur of one colour is that colour, so the middle of it has to come back untouched.
+     */
+    #[test]
+    fn a_blurred_layer_keeps_the_colour_it_was_given() {
+        let surface = GuestSurface::new(128, 128).unwrap();
+        let colour = [0x20, 0x40, 0xc0, 0xff];
+
+        for y in 0..128 {
+            for x in 0..128 {
+                surface.pixel(x, y, colour);
+            }
+        }
+        let mut renderer = MetalHeadlessRenderer::new();
+        let crisp = render_through(&mut renderer, &surface, 0.0);
+        let blurred = render_through(&mut renderer, &surface, 28.0);
+        let expected = Rgba([0xc0, 0x40, 0x20, 0xff]);
+
+        assert_eq!(
+            crisp.get_pixel(64, 64),
+            &expected,
+            "the surface is not drawn as the colour it holds"
+        );
+        let middle = blurred.get_pixel(64, 64).0;
+        println!("crisp {expected:?}, blurred middle {middle:?}");
+        for (channel, (blurred, crisp)) in middle.iter().zip(expected.0.iter()).enumerate() {
+            let difference = i32::from(*blurred) - i32::from(*crisp);
+
+            assert!(
+                difference.abs() <= 2,
+                "the blur moved channel {channel} by {difference}: the window changes colour while it is blurred"
+            );
+        }
+    }
+
     #[test]
     fn the_window_draws_the_callers_buffer() {
         let surface = GuestSurface::new(64, 64).unwrap();
