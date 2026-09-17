@@ -40,8 +40,8 @@ shared.qemudir = path.join(shared.cachedir, "qemu")
 shared.qemurelease = "https://github.com/milesbuckton/homebrew-qemu-virgl/releases/download/latest"
 shared.qemubottles = {
     {file = "qemu-master.arm64_tahoe.tgz",
-     release = "https://github.com/yumedots/qemu/releases/download/qemu-f7b793d2f828b9e7d418036b55b54fe50075393e",
-     sha256 = "a3c4de8db16d1e6ed52f78488544e96f18f7cb2607a5b0634d1dee02de587832"},
+     release = "https://github.com/yumedots/qemu/releases/download/qemu-7d46e13418ea8f3cae9fed5b8c6148877f1b5255",
+     sha256 = "260d89ed4b544248fc072f68ea91e40ef1669b25a9f352e83453bfbc1eea35cf"},
     {file = "virglrenderer-main.arm64_tahoe.bottle.1.tar.gz", opt = "virglrenderer",
      sha256 = "4d74f6530e78f4f72de1599e9a648b0d124e3d82e1b06dd36d9be76b039704b6"},
     {file = "libangle-main.20260909.3e88857d9.arm64_tahoe.bottle.1.tar.gz", opt = "libangle",
