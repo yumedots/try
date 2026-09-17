@@ -214,39 +214,20 @@ func TestTheScaleFollowsTheDensityNotTheWindowSize(t *testing.T) {
 	}
 }
 
-func TestTheGreeterGetsTheScaleTheWindowRuleDoes(t *testing.T) {
+func TestTheWindowRuleCarriesTheDesktopScale(t *testing.T) {
 	for _, size := range [][2]int{{3024, 1964}, {2160, 1248}, {1000, 750}} {
 		connector := writeEDID(t, baseEDID(size[0], size[1], 2.0))
 		rule, found, ok := windowRule(connector)
 		if !ok {
 			t.Fatalf("%dx%d: no rule", size[0], size[1])
 		}
-		scale := greeterScale(found)
+		scale := displayScale(found.timing.width, found.timing.height, found.widthMM, found.heightMM)
 		if scale <= 0 {
-			t.Fatalf("%dx%d: no scale for the greeter", size[0], size[1])
+			t.Fatalf("%dx%d: no scale", size[0], size[1])
 		}
 		want := fmt.Sprintf("scale = %q", strconv.FormatFloat(scale, 'f', -1, 64))
 		if !strings.Contains(rule, want) {
 			t.Fatalf("%dx%d: rule %q does not carry %q", size[0], size[1], rule, want)
-		}
-	}
-}
-
-func TestTheGreeterGetsTheDesktopScaleAsAnXftDPI(t *testing.T) {
-	for _, test := range []struct {
-		scale float64
-		dpi   int
-	}{{2, 192}, {2.5, 240}, {1.6, 154}} {
-		if got := xftDPIValue(test.scale); got != test.dpi {
-			t.Fatalf("scale %g wants dpi %d, got %d", test.scale, test.dpi, got)
-		}
-		resource := xftResource(test.scale)
-		if want := fmt.Sprintf("Xft.dpi: %d", test.dpi); !strings.Contains(resource, want) {
-			t.Fatalf("scale %g resource %q does not carry %q", test.scale, resource, want)
-		}
-		settings := xsettingsConfigText(test.scale)
-		if want := fmt.Sprintf("Xft/DPI %d", test.dpi*1024); !strings.Contains(settings, want) {
-			t.Fatalf("scale %g settings %q does not carry %q", test.scale, settings, want)
 		}
 	}
 }

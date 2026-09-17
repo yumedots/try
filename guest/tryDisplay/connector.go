@@ -30,10 +30,6 @@ func outputName(connector string) string {
 	return name
 }
 
-func greeterScale(found display) float64 {
-	return displayScale(found.timing.width, found.timing.height, found.widthMM, found.heightMM)
-}
-
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

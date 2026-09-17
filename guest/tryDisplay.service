@@ -1,7 +1,7 @@
 [Unit]
 Description=follow the host window size in the guest display
 After=firstBoot.service
-Before=display-manager.service
+Before=hyprland.service
 
 [Service]
 Type=simple
