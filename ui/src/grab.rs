@@ -1,10 +1,11 @@
 use gpui::{px, size};
 use image::RgbaImage;
 use std::{
-    env, path::{Path, PathBuf}, process::exit, time::{Duration, Instant},
+    env, path::{Path, PathBuf}, process::exit, sync::{Arc, Mutex}, time::{Duration, Instant},
 };
 use crate::bridge::{start_bridge, Bridge, Event};
 use crate::geometry::{clamp_to_display, window_size, GUEST_MAX_DISPLAY};
+use crate::surfaceRing::Ring;
 
 pub(crate) const GRAB_SCALE: f32 = 2.0;
 
@@ -21,9 +22,13 @@ pub(crate) const GRAB_TIMEOUT: u64 = 240;
  * a window does to a guest that is already up; a frame is written next to the path after
  * every stage, named <stem>.<n><ext>, so a frame leaking over from the one before cannot
  * pass for the one that was asked for.
+ *
+ * A frame the console read into a surface of ours is read out of that surface here, so
+ * what is written is what the window would be drawing, whichever way it arrived.
  */
 pub(crate) fn grab(path: PathBuf) {
-    let bridge = match start_bridge() {
+    let ring = Arc::new(Mutex::new(Ring::new()));
+    let bridge = match start_bridge(ring) {
         Ok(bridge) => bridge,
         Err(error) => {
             eprintln!("grab: {error}");
@@ -67,6 +72,16 @@ pub(crate) fn grab(path: PathBuf) {
             }) => {
                 println!("grab: frame {width}x{height} at {:?}", started.elapsed());
                 last = Some((width, height, pixels));
+            }
+            Ok(Event::Surface) => {
+                let frame = bridge.ring.lock().unwrap().pixels();
+                match frame {
+                    Some((width, height, pixels)) => {
+                        println!("grab: frame {width}x{height} at {:?}", started.elapsed());
+                        last = Some((width, height, pixels));
+                    }
+                    None => eprintln!("grab: the console's surface could not be read"),
+                }
             }
             Ok(Event::Error(error)) => {
                 eprintln!("grab: {error}");

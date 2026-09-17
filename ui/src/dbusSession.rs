@@ -8,8 +8,12 @@ use crate::geometry::{clamp_to_display, opening_size};
 use crate::input::{send_button, Input, KeyboardProxy, MouseProxy, WHEEL_DOWN, WHEEL_UP};
 use crate::qemu::{qemu_stopped, Qemu};
 use crate::resize::SharedResize;
+use crate::surfaceRing::SharedRing;
 
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/* how soon the guest hears about a key, a click or a hand-over the window asked for */
+pub(crate) const INPUT_POLL: Duration = Duration::from_millis(8);
 
 pub(crate) static LAST_FRAME: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
@@ -72,6 +76,7 @@ impl DisplayListener {
 pub(crate) async fn connect_display(
     events: Sender<Event>,
     resize: SharedResize,
+    ring: SharedRing,
     input: Receiver<Input>,
     qemu: Qemu,
     serial_log: PathBuf,
@@ -128,7 +133,7 @@ pub(crate) async fn connect_display(
         .await
         .map_err(|error| format!("could not open the QEMU keyboard: {error}"))?;
     let mouse = MouseProxy::builder(&connection)
-        .path(console_path)
+        .path(console_path.clone())
         .map_err(|error| format!("could not create the QEMU mouse path: {error}"))?
         .build()
         .await
@@ -146,6 +151,7 @@ pub(crate) async fn connect_display(
             DisplayListener {
                 listener: Mutex::new(Listener {
                     events: events.clone(),
+                    ring: ring.clone(),
                     surface: None,
                 }),
             },
@@ -166,6 +172,17 @@ pub(crate) async fn connect_display(
                 ready = true;
                 let _ = events.send(Event::Ready);
                 println!("guest display readiness service completed");
+            }
+        }
+        /*
+         * A frame landed, so the console is owed the next surface of the ring: it is told
+         * once per frame rather than once, which is what keeps the surface it writes into
+         * out from under the one the window is drawing.
+         */
+        let handover = ring.lock().unwrap().take_request();
+        if let Some(name) = handover {
+            if let Err(error) = console.set_surface(&name).await {
+                println!("guest surface handover failed: {error}");
             }
         }
         let mut pointer = None;
@@ -239,7 +256,7 @@ pub(crate) async fn connect_display(
         if let Some(status) = qemu_stopped(&qemu) {
             return Err(format!("QEMU exited: {status}"));
         }
-        task::sleep(Duration::from_millis(16)).await;
+        task::sleep(INPUT_POLL).await;
     }
 }
 

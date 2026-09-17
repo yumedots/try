@@ -1,5 +1,6 @@
 use std::sync::{mpsc::Sender, Mutex};
 use crate::bridge::Event;
+use crate::surfaceRing::SharedRing;
 
 pub(crate) struct Surface {
     pub(crate) width: u32,
@@ -28,6 +29,7 @@ pub(crate) struct Update {
 
 pub(crate) struct Listener {
     pub(crate) events: Sender<Event>,
+    pub(crate) ring: SharedRing,
     pub(crate) surface: Option<Surface>,
 }
 
@@ -53,6 +55,8 @@ pub trait VM {
 pub trait Console {
     fn register_listener(&self, listener: zbus::zvariant::Fd<'_>) -> zbus::Result<()>;
 
+    fn set_surface(&self, surface: &str) -> zbus::Result<()>;
+
     #[zbus(name = "SetUIInfo")]
     fn set_ui_info(
         &self,
@@ -67,6 +71,9 @@ pub trait Console {
 
 impl Listener {
     pub(crate) fn replace_surface(&mut self, scanout: Scanout) {
+        if scanout.data.is_empty() {
+            return self.handed_frame();
+        }
         let pixels = pixels_to_rgba(
             scanout.width,
             scanout.height,
@@ -80,11 +87,19 @@ impl Listener {
             pixels,
             format: scanout.format,
         });
+        self
+            .ring
+            .lock()
+            .unwrap()
+            .software_frame(scanout.width, scanout.height);
         self.send_frame();
     }
 
     pub(crate) fn update_surface(&mut self, update: Update) {
-        let Some(surface) = self.surface.as_mut() else {
+        if update.data.is_empty() {
+            return self.handed_frame();
+        }
+        let Some(surface) = self.surface.as_ref() else {
             return;
         };
         if surface.format != update.format || update.x < 0 || update.y < 0 {
@@ -94,9 +109,28 @@ impl Listener {
         let y = update.y as u32;
         let width = update.w.max(0) as u32;
         let height = update.h.max(0) as u32;
-        if x.saturating_add(width) > surface.width || y.saturating_add(height) > surface.height {
+        let fits = x.saturating_add(width) <= surface.width
+            && y.saturating_add(height) <= surface.height;
+        /*
+         * The whole of it from the corner at a size this frame is not: that is the console
+         * at a new size, not a patch of this one - it happens when the console could not
+         * write into a surface of ours, and without this the frame goes on being that size.
+         */
+        if !fits {
+            if x == 0 && y == 0 {
+                self.replace_surface(Scanout {
+                    width,
+                    height,
+                    stride: update.stride,
+                    format: update.format,
+                    data: update.data,
+                });
+            }
             return;
         }
+        let Some(surface) = self.surface.as_mut() else {
+            return;
+        };
         let updated = pixels_to_rgba(width, height, update.stride, update.format, &update.data);
         for row in 0..height as usize {
             let source_start = row * width as usize * 4;
@@ -105,6 +139,15 @@ impl Listener {
                 .copy_from_slice(&updated[source_start..source_start + width as usize * 4]);
         }
         self.send_frame();
+    }
+
+    /*
+     * The pixels are not here: the console read them into a surface of ours, which is
+     * already in the window's hands, so all this frame costs is the redraw.
+     */
+    fn handed_frame(&mut self) {
+        self.ring.lock().unwrap().landed();
+        let _ = self.events.send(Event::Surface);
     }
 
     pub(crate) fn send_frame(&self) {
@@ -139,4 +182,87 @@ pub(crate) fn pixels_to_rgba(width: u32, height: u32, stride: u32, format: u32, 
         }
     }
     pixels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{mpsc, Arc};
+    use crate::surfaceRing::Ring;
+
+    const BGRX: u32 = 0x20088880;
+
+    fn frame(width: u32, height: u32, value: u8) -> Vec<u8> {
+        let mut data = vec![0; width as usize * height as usize * 4];
+        for pixel in data.as_chunks_mut::<4>().0 {
+            pixel.fill(value);
+        }
+        data
+    }
+
+    fn listener() -> (Listener, mpsc::Receiver<Event>) {
+        let (events, frames) = mpsc::channel();
+        (
+            Listener {
+                events,
+                ring: Arc::new(Mutex::new(Ring::new())),
+                surface: None,
+            },
+            frames,
+        )
+    }
+
+    #[test]
+    fn a_whole_frame_at_another_size_is_the_console_resizing() {
+        let (mut listener, frames) = listener();
+        listener.replace_surface(Scanout {
+            width: 64,
+            height: 48,
+            stride: 64 * 4,
+            format: BGRX,
+            data: frame(64, 48, 0x20),
+        });
+        assert_eq!(listener.ring.lock().unwrap().size(), (64, 48));
+
+        /* the shape the console sends when it could not write into a surface of ours */
+        listener.update_surface(Update {
+            x: 0,
+            y: 0,
+            w: 96,
+            h: 64,
+            stride: 96 * 4,
+            format: BGRX,
+            data: frame(96, 64, 0x40),
+        });
+        assert_eq!(
+            listener.ring.lock().unwrap().size(),
+            (96, 64),
+            "the frame went on being the size the console had stopped using"
+        );
+        assert!(frames.try_iter().count() > 0);
+    }
+
+    #[test]
+    fn a_patch_of_this_frame_leaves_it_alone() {
+        let (mut listener, _frames) = listener();
+        listener.replace_surface(Scanout {
+            width: 64,
+            height: 48,
+            stride: 64 * 4,
+            format: BGRX,
+            data: frame(64, 48, 0x20),
+        });
+
+        /* a patch that does not fit is not the console resizing: it is a frame to drop */
+        listener.update_surface(Update {
+            x: 32,
+            y: 16,
+            w: 64,
+            h: 48,
+            stride: 64 * 4,
+            format: BGRX,
+            data: frame(64, 48, 0x40),
+        });
+        assert_eq!(listener.ring.lock().unwrap().size(), (64, 48));
+    }
 }

@@ -3,8 +3,8 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::CFString;
 use core_video::pixel_buffer::{
-    kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
-    kCVPixelFormatType_32BGRA, CVPixelBuffer,
+    kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferLock_ReadOnly,
+    kCVPixelBufferMetalCompatibilityKey, kCVPixelFormatType_32BGRA, CVPixelBuffer,
 };
 use gpui::{ObjectFit, Surface};
 
@@ -55,12 +55,8 @@ impl GuestSurface {
         &self.buffer
     }
 
-    #[allow(deprecated)]
     pub fn io_surface_id(&self) -> u32 {
-        self.buffer
-            .get_io_surface()
-            .map(|surface| surface.get_id())
-            .unwrap_or(0)
+        crate::surfacePort::id(&self.buffer)
     }
 
     pub fn fill(&self) {
@@ -85,6 +81,24 @@ impl GuestSurface {
                     .copy_from_slice(&rows[(y / PATTERN_CELL % 2) as usize]);
             }
         });
+    }
+
+    /* the frame as it would have come over the socket, for the harness that writes it out */
+    pub fn read(&self) -> Option<Vec<u8>> {
+        if self.buffer.lock_base_address(kCVPixelBufferLock_ReadOnly) != 0 {
+            return None;
+        }
+        let stride = self.buffer.get_bytes_per_row();
+        let base = unsafe { self.buffer.get_base_address() as *const u8 };
+        let pixels = unsafe { std::slice::from_raw_parts(base, stride * self.height as usize) };
+        let mut rgba = Vec::with_capacity(self.width as usize * self.height as usize * 4);
+        for row in pixels.chunks_exact(stride).take(self.height as usize) {
+            for pixel in row.as_chunks::<4>().0.iter().take(self.width as usize) {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 0xff]);
+            }
+        }
+        self.buffer.unlock_base_address(kCVPixelBufferLock_ReadOnly);
+        Some(rgba)
     }
 
     #[cfg(test)]
@@ -137,6 +151,74 @@ mod tests {
         renderer
             .render_scene_to_image(&scene, size(DevicePixels(64), DevicePixels(64)))
             .unwrap()
+    }
+
+    fn detail(image: &image::RgbaImage) -> f32 {
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for y in 0..image.height() {
+            for x in 1..image.width() {
+                let before = image.get_pixel(x - 1, y).0;
+                let after = image.get_pixel(x, y).0;
+                let before = (f32::from(before[0]) + f32::from(before[1]) + f32::from(before[2])) / 3.0;
+                let after = (f32::from(after[0]) + f32::from(after[1]) + f32::from(after[2])) / 3.0;
+                sum += (before - after).abs();
+                count += 1.0;
+            }
+        }
+        sum / count
+    }
+
+    fn render_through(
+        renderer: &mut MetalHeadlessRenderer,
+        surface: &GuestSurface,
+        blur: f32,
+    ) -> image::RgbaImage {
+        use gpui::{point, px, size, Bounds, ContentMask, Filter, ScaledPixels};
+
+        let sides = size(px(128.), px(128.));
+        let bounds = Bounds::new(point(px(0.), px(0.)), sides);
+        let scaled: Bounds<ScaledPixels> = bounds.scale(1.0);
+        let mut scene = Scene::default();
+
+        if blur > 0.0 {
+            scene.push_filter(
+                scaled.dilate(ScaledPixels(blur * 3.0)),
+                scaled.center(),
+                scaled,
+                Filter {
+                    blur,
+                    ..Default::default()
+                },
+            );
+        }
+        scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds: scaled,
+            content_mask: ContentMask { bounds }.scale(1.0),
+            image_buffer: surface.buffer().clone(),
+        });
+        if blur > 0.0 {
+            scene.pop_filter();
+        }
+        renderer
+            .render_scene_to_image(&scene, size(DevicePixels(128), DevicePixels(128)))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_blurred_layer_softens_the_surface() {
+        let surface = GuestSurface::new(128, 128).unwrap();
+        surface.fill();
+        let mut renderer = MetalHeadlessRenderer::new();
+        let crisp = detail(&render_through(&mut renderer, &surface, 0.0));
+        let blurred = detail(&render_through(&mut renderer, &surface, 28.0));
+
+        println!("surface detail: crisp {crisp}, blurred {blurred}");
+        assert!(
+            blurred < crisp * 0.6,
+            "the layer filter left the surface as crisp as it was: {blurred} against {crisp}"
+        );
     }
 
     #[test]

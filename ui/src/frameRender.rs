@@ -20,14 +20,37 @@ impl Render for Frame {
          */
         let wanted = window_size(viewport, scale);
         self.wanted = Some(wanted);
-        let blur = self
+        let resized = self
             .bridge
             .as_ref()
             .and_then(|bridge| bridge.resized(wanted, Instant::now()));
+        /*
+         * The blur covers a guest re-moding under the window, so it is only worn by a guest
+         * that is up: a window being dragged while the guest is still booting has no desktop
+         * to hide, and the console it is drawing does not follow the window anyway.
+         */
+        let blur = if self.ready && self.error.is_none() {
+            resized
+        } else {
+            None
+        };
+        /*
+         * A frame the console read into a surface of ours is already the guest's picture:
+         * it is drawn where it lies, cropped to the window like an image would be, and the
+         * copy that comes through the socket is only ever a fallback for a guest whose
+         * console has no surface of ours (or not one its size).
+         */
+        let handed = if self.ready { self.handed() } else { None };
         let content = if self.settings_open {
             self.settings(cx).into_any_element()
         } else if self.surface_demo {
             self.demo(viewport, scale)
+        } else if let Some(guest) = handed {
+            gpui::surface(guest)
+                .object_fit(ObjectFit::Cover)
+                .w(viewport.width)
+                .h(viewport.height)
+                .into_any_element()
         } else {
             match (&self.image, &self.error, self.ready) {
                 (Some(image), _, true) => {

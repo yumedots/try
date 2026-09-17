@@ -11,7 +11,6 @@ core-video = { version = "0.5.2", features = ["metal"] }
 gpui = { git = "https://github.com/yumedots/gpui.git", rev = "f2571b5563f425fd8cb9ba8d8d804856a7e2d24d" }
 gpui_platform = { git = "https://github.com/yumedots/gpui.git", rev = "f2571b5563f425fd8cb9ba8d8d804856a7e2d24d", features = ["font-kit"] }
 image = "0.25"
-io-surface = { version = "0.16", features = ["link"] }
 objc = "0.2"
 serde_bytes = "0.11"
 smallvec = "1"

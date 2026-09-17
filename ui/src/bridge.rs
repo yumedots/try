@@ -11,6 +11,7 @@ use crate::mouseButtons;
 use crate::paths::{project_dir, serial_log};
 use crate::qemu::{qemu_command, Qemu};
 use crate::resize::{Resize, SharedResize};
+use crate::surfaceRing::SharedRing;
 
 pub(crate) enum Event {
     Frame {
@@ -18,6 +19,8 @@ pub(crate) enum Event {
         height: u32,
         pixels: Vec<u8>,
     },
+    /* a frame landed in the surface of ours the console holds, pixels and all */
+    Surface,
     Ready,
     Error(String),
 }
@@ -25,6 +28,7 @@ pub(crate) enum Event {
 pub(crate) struct Bridge {
     pub(crate) events: Receiver<Event>,
     pub(crate) resize: SharedResize,
+    pub(crate) ring: SharedRing,
     pub(crate) input: Sender<Input>,
     pub(crate) qemu: Qemu,
 }
@@ -59,7 +63,7 @@ impl Drop for Bridge {
     }
 }
 
-pub(crate) fn start_bridge() -> Result<Bridge, String> {
+pub(crate) fn start_bridge(ring: SharedRing) -> Result<Bridge, String> {
     let project = project_dir();
     let (program, argv, qemu_env) = qemu_command(&project)?;
     let display = display_max(&argv);
@@ -70,6 +74,7 @@ pub(crate) fn start_bridge() -> Result<Bridge, String> {
     let qemu: Qemu = Arc::new(Mutex::new(None));
     let thread_qemu = qemu.clone();
     let log = serial_log(&project);
+    let thread_ring = ring.clone();
 
     thread::spawn(move || {
         let serial_log = log;
@@ -103,6 +108,7 @@ pub(crate) fn start_bridge() -> Result<Bridge, String> {
         let result = task::block_on(connect_display(
             events_tx.clone(),
             thread_resize,
+            thread_ring,
             input_rx,
             thread_qemu.clone(),
             serial_log,
@@ -116,21 +122,21 @@ pub(crate) fn start_bridge() -> Result<Bridge, String> {
     Ok(Bridge {
         events: events_rx,
         resize,
+        ring,
         input: input_tx,
         qemu,
     })
 }
 
-pub(crate) fn spawn_bridge(reset: bool) -> Receiver<Result<Bridge, String>> {
+pub(crate) fn spawn_bridge(reset: bool, ring: SharedRing) -> Receiver<Result<Bridge, String>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let result = if reset {
-            run_host(&["reset"])
-                .and_then(|()| run_host(&["build", "disk"]))
-                .and_then(|()| start_bridge())
+        let prepared = if reset {
+            run_host(&["reset"]).and_then(|()| run_host(&["build", "disk"]))
         } else {
-            start_bridge()
+            Ok(())
         };
+        let result = prepared.and_then(|()| start_bridge(ring));
         let _ = sender.send(result);
     });
     receiver

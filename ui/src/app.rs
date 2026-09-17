@@ -1,3 +1,4 @@
+use core_video::pixel_buffer::CVPixelBuffer;
 use gpui::{
     Context, FocusHandle, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, Pixels,
     Point, RenderImage, ScrollDelta, Size,
@@ -14,6 +15,26 @@ use crate::input::{
     is_settings_toggle, keycode, ALT, CAPS_LOCK, CONTROL, Input, SHIFT, SUPER,
 };
 use crate::settings::{read_settings, write_settings, Settings};
+use crate::surfaceRing::{Ring, SharedRing};
+
+/*
+ * Every frame is timed, whichever way it arrived: `surface` is one the console read into a
+ * surface of ours and `image` is one that still had to come over the socket.
+ */
+fn note_frame(source: &str, width: u32, height: u32) {
+    let now = Instant::now();
+    let slot = LAST_FRAME.get_or_init(|| Mutex::new(None));
+    let mut last = slot.lock().unwrap();
+    if let Some(previous) = *last {
+        println!(
+            "tryfps: {width}x{height} from {source} after {:?}",
+            now.duration_since(previous)
+        );
+    }
+    *last = Some(now);
+}
+
+pub(crate) const FRAME_POLL: Duration = Duration::from_millis(8);
 
 pub(crate) struct Frame {
     pub(crate) bridge: Option<Bridge>,
@@ -29,6 +50,7 @@ pub(crate) struct Frame {
     pub(crate) ready: bool,
     pub(crate) error: Option<String>,
     pub(crate) guest: Option<GuestSurface>,
+    pub(crate) ring: SharedRing,
     pub(crate) surface_demo: bool,
     pub(crate) wanted: Option<WindowSize>,
     pub(crate) shape_note: Option<String>,
@@ -37,7 +59,8 @@ pub(crate) struct Frame {
 impl Frame {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let settings = read_settings();
-        let (bridge, error) = match start_bridge() {
+        let ring: SharedRing = Arc::new(Mutex::new(Ring::new()));
+        let (bridge, error) = match start_bridge(ring.clone()) {
             Ok(bridge) => (Some(bridge), None),
             Err(error) => (None, Some(error)),
         };
@@ -60,8 +83,12 @@ impl Frame {
                 cx.notify();
             })
             .ok();
+            /*
+             * How soon a frame that landed is drawn: the window is redrawn on the display's
+             * own refresh, so polling faster than that only keeps the frame it draws newer.
+             */
             cx.background_executor()
-                .timer(Duration::from_millis(16))
+                .timer(FRAME_POLL)
                 .await;
         })
         .detach();
@@ -79,6 +106,7 @@ impl Frame {
             ready: false,
             error,
             guest: None,
+            ring,
             surface_demo: env::var_os("TRY_SURFACE").is_some(),
             wanted: None,
             shape_note: None,
@@ -191,19 +219,8 @@ impl Frame {
                     height,
                     pixels,
                 } => {
-                    let now = Instant::now();
-                    let slot = LAST_FRAME.get_or_init(|| Mutex::new(None));
-                    let mut last = slot.lock().unwrap();
-                    if let Some(previous) = *last {
-                        println!(
-                            "tryfps: {width}x{height} after {:?}",
-                            now.duration_since(previous)
-                        );
-                    }
-                    *last = Some(now);
-                    drop(last);
+                    note_frame("image", width, height);
                     dump_frame(width, height, &pixels);
-                    self.surface = (width, height);
                     self.image = RgbaImage::from_raw(width, height, pixels).map(|buffer| {
                         Arc::new(RenderImage::new(SmallVec::from_elem(
                             ImageFrame::new(buffer),
@@ -211,13 +228,13 @@ impl Frame {
                         )))
                     });
                     self.error = None;
-                    let note = frame_shape(self.surface, self.wanted);
-                    if note != self.shape_note {
-                        if let Some(note) = &note {
-                            println!("{note}");
-                        }
-                        self.shape_note = note;
-                    }
+                    self.landed(width, height);
+                }
+                Event::Surface => {
+                    let (width, height) = self.ring.lock().unwrap().size();
+                    note_frame("surface", width, height);
+                    self.error = None;
+                    self.landed(width, height);
                 }
                 Event::Ready => self.ready = true,
                 Event::Error(error) => self.error = Some(error),
@@ -240,6 +257,30 @@ impl Frame {
         }
     }
 
+    fn landed(&mut self, width: u32, height: u32) {
+        self.surface = (width, height);
+        let note = frame_shape(self.surface, self.wanted);
+        if note != self.shape_note {
+            if let Some(note) = &note {
+                println!("{note}");
+            }
+            self.shape_note = note;
+        }
+    }
+
+    /*
+     * The newest frame, when the console read it into a surface of ours instead of
+     * sending it: the window draws that surface where it lies, which is what keeps the
+     * pixels out of the socket and off the CPU.
+     */
+    pub(crate) fn handed(&self) -> Option<CVPixelBuffer> {
+        self.ring
+            .lock()
+            .unwrap()
+            .ready()
+            .map(|surface| surface.buffer().clone())
+    }
+
     pub(crate) fn apply(&mut self, cx: &mut Context<Self>, reset: bool) {
         write_settings(&self.settings);
         self.restart(cx, reset);
@@ -247,7 +288,7 @@ impl Frame {
 
     pub(crate) fn restart(&mut self, cx: &mut Context<Self>, reset: bool) {
         self.bridge = None;
-        self.pending = Some(spawn_bridge(reset));
+        self.pending = Some(spawn_bridge(reset, self.ring.clone()));
         self.image = None;
         self.ready = false;
         self.error = None;

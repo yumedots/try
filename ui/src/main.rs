@@ -31,6 +31,10 @@ mod frameView;
 mod guestSurface;
 #[allow(non_snake_case)]
 mod mouseButtons;
+#[allow(non_snake_case)]
+mod surfacePort;
+#[allow(non_snake_case)]
+mod surfaceRing;
 
 fn main() {
     if let Some(path) = env::var_os("TRY_GRAB") {
