@@ -8,8 +8,8 @@ async-std = "1.12"
 async-trait = "0.1"
 core-foundation = "0.10"
 core-video = { version = "0.5.2", features = ["metal"] }
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "cbffa0f5e1fc4a05b43c3e29d0c759b5d24d0f8f" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "cbffa0f5e1fc4a05b43c3e29d0c759b5d24d0f8f", features = ["font-kit"] }
+gpui = { git = "https://github.com/yumedots/gpui.git", rev = "f2571b5563f425fd8cb9ba8d8d804856a7e2d24d" }
+gpui_platform = { git = "https://github.com/yumedots/gpui.git", rev = "f2571b5563f425fd8cb9ba8d8d804856a7e2d24d", features = ["font-kit"] }
 image = "0.25"
 io-surface = { version = "0.16", features = ["link"] }
 serde_bytes = "0.11"
@@ -17,7 +17,4 @@ smallvec = "1"
 zbus = { version = "5", features = ["p2p", "serde_bytes"] }
 
 [dev-dependencies]
-gpui_apple = { path = "../vendor/gpui_apple", features = ["test-support"] }
-
-[patch."https://github.com/zed-industries/zed.git"]
-gpui_apple = { path = "../vendor/gpui_apple" }
+gpui_apple = { git = "https://github.com/yumedots/gpui.git", rev = "f2571b5563f425fd8cb9ba8d8d804856a7e2d24d", features = ["test-support"] }
