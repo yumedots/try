@@ -71,14 +71,18 @@ type Qemu = Arc<Mutex<Option<Child>>>;
 
 struct Bridge {
     events: Receiver<Event>,
-    window_size: SharedSize,
+    resize: SharedResize,
     input: Sender<Input>,
     qemu: Qemu,
 }
 
 impl Bridge {
-    fn set_window_size(&self, size: WindowSize) {
-        *self.window_size.lock().unwrap() = Some(size);
+    /* the window is this size now, and this is the radius of the blur it wears for it */
+    fn resized(&self, size: WindowSize, now: Instant) -> Option<f32> {
+        let mut resize = self.resize.lock().unwrap();
+
+        resize.changed(size, now);
+        resize.blur(now)
     }
 }
 
@@ -295,7 +299,7 @@ struct WindowSize {
     height: u32,
 }
 
-type SharedSize = Arc<Mutex<Option<WindowSize>>>;
+type SharedResize = Arc<Mutex<Resize>>;
 
 /*
  * The guest reads the window twice over from the EDID we send: the pixel size asks for
@@ -351,41 +355,80 @@ fn opening_size(wanted: WindowSize, display: (u32, u32), ready: bool) -> WindowS
 }
 
 /*
- * The guest re-reads its EDID and re-applies its mode for every size it is told, so a
- * drag has to arrive as one request at the size the window lands on, not one per frame
- * the window passed through: a stream of them leaves the guest's desktop tracing a
- * console that is still changing modes.
+ * The window's size, and when it last changed.  Both halves of a resize read it: the frame
+ * is blurred while a drag is still moving the window, and the display bridge waits for the
+ * size to hold still before it asks the guest for it, because the guest re-reads its EDID and
+ * re-applies its mode for every size it is told and a stream of them leaves its desktop
+ * tracing a console that is still changing modes.  The blur outlasts the request: the guest
+ * needs a moment to re-mode, and only then does it send a frame that size.
+ *
+ * The blur it hands out is a radius to paint with rather than on or off, so it comes up over a
+ * few frames and lets go the same way: neither end of a drag is the window jumping from sharp
+ * to blurred in a single frame.
  */
 const RESIZE_SETTLE: Duration = Duration::from_millis(150);
+const BLUR_HOLD: Duration = Duration::from_millis(500);
+const BLUR_FADE: Duration = Duration::from_millis(60);
+const BLUR_RADIUS: f32 = 28.0;
 
-struct Settled {
-    latest: Option<WindowSize>,
+struct Resize {
+    size: Option<WindowSize>,
     since: Option<Instant>,
+    /* when the drag in flight started, which is what the blur ramps up over */
+    drag: Option<Instant>,
 }
 
-impl Settled {
+impl Resize {
     fn new() -> Self {
         Self {
-            latest: None,
+            size: None,
             since: None,
+            drag: None,
         }
     }
 
-    fn offer(&mut self, size: WindowSize, now: Instant) -> Option<WindowSize> {
-        if self.latest != Some(size) {
-            self.latest = Some(size);
-            self.since = Some(now);
+    /*
+     * The window is this size now.  A size it moves to while the blur is still up is the same
+     * drag; one that arrives after it has cleared starts a new one, which is what the blur
+     * comes up from; and the size it opened at is no drag at all.
+     */
+    fn changed(&mut self, size: WindowSize, now: Instant) {
+        if self.size == Some(size) {
+            return;
+        }
+        if self.size.is_some() && (self.drag.is_none() || self.unchanged_for(now) >= BLUR_HOLD) {
+            self.drag = Some(now);
+        }
+        self.size = Some(size);
+        self.since = Some(now);
+    }    fn size(&self) -> Option<WindowSize> {
+        self.size
+    }
+
+    fn dragging(&self, now: Instant) -> bool {
+        self.drag.is_some() && self.unchanged_for(now) < BLUR_HOLD
+    }
+
+    /* what to blur the frame by, or nothing when there is no drag to cover */
+    fn blur(&self, now: Instant) -> Option<f32> {
+        if !self.dragging(now) {
             return None;
         }
-        if self
-            .since
-            .map(|since| now.duration_since(since) >= RESIZE_SETTLE)
-            .unwrap_or(false)
-        {
-            self.since = None;
-            return Some(size);
-        }
-        None
+        let left = BLUR_HOLD.checked_sub(self.unchanged_for(now))?;
+        let up = now.saturating_duration_since(self.drag?);
+        let eased = up.min(left).as_secs_f32() / BLUR_FADE.as_secs_f32();
+
+        Some(BLUR_RADIUS * eased.min(1.0))
+    }
+
+    fn landed(&self, now: Instant) -> bool {
+        self.size.is_some() && self.unchanged_for(now) >= RESIZE_SETTLE
+    }
+
+    fn unchanged_for(&self, now: Instant) -> Duration {
+        self.since
+            .map(|since| now.saturating_duration_since(since))
+            .unwrap_or_default()
     }
 }
 
@@ -787,8 +830,8 @@ fn start_bridge() -> Result<Bridge, String> {
     let display = display_max(&argv);
     let (events_tx, events_rx) = mpsc::channel();
     let (input_tx, input_rx) = mpsc::channel();
-    let window_size: SharedSize = Arc::new(Mutex::new(None));
-    let thread_window = window_size.clone();
+    let resize: SharedResize = Arc::new(Mutex::new(Resize::new()));
+    let thread_resize = resize.clone();
     let qemu: Qemu = Arc::new(Mutex::new(None));
     let thread_qemu = qemu.clone();
     let log = serial_log(&project);
@@ -824,7 +867,7 @@ fn start_bridge() -> Result<Bridge, String> {
         println!("started headless QEMU for GPUI display");
         let result = task::block_on(connect_display(
             events_tx.clone(),
-            thread_window,
+            thread_resize,
             input_rx,
             thread_qemu.clone(),
             serial_log,
@@ -837,7 +880,7 @@ fn start_bridge() -> Result<Bridge, String> {
 
     Ok(Bridge {
         events: events_rx,
-        window_size,
+        resize,
         input: input_tx,
         qemu,
     })
@@ -887,7 +930,7 @@ fn qemu_stopped(qemu: &Qemu) -> Option<String> {
 
 async fn connect_display(
     events: Sender<Event>,
-    window: SharedSize,
+    resize: SharedResize,
     input: Receiver<Input>,
     qemu: Qemu,
     serial_log: PathBuf,
@@ -974,7 +1017,6 @@ async fn connect_display(
     println!("connected to QEMU D-Bus console {console_id}");
     let mut ready = false;
     let mut requested = None;
-    let mut settle = Settled::new();
     let mut polled = Instant::now();
     loop {
         if !ready && polled.elapsed() >= POLL_INTERVAL {
@@ -1035,19 +1077,21 @@ async fn connect_display(
          * shaped screen.  Asking for the window scaled into that box keeps the layout
          * matching the window, at the cost of the host scaling the image a little.
          */
-        let wanted = *window.lock().unwrap();
+        let (wanted, landed) = {
+            let tracked = resize.lock().unwrap();
+
+            (tracked.size(), tracked.landed(Instant::now()))
+        };
         if let Some(size) = wanted {
             let size = opening_size(size, display, ready);
-            if let Some(size) = settle.offer(size, Instant::now()) {
+            if landed && requested != Some(size) {
                 let (width, height) = clamp_to_display((size.width, size.height), display);
-                if requested != Some(size) {
-                    console
-                        .set_ui_info(size.width_mm, size.height_mm, 0, 0, width, height)
-                        .await
-                        .map_err(|error| format!("could not resize the QEMU display: {error}"))?;
-                    println!("requested guest display resize: {width}x{height}");
-                    requested = Some(size);
-                }
+                console
+                    .set_ui_info(size.width_mm, size.height_mm, 0, 0, width, height)
+                    .await
+                    .map_err(|error| format!("could not resize the QEMU display: {error}"))?;
+                println!("requested guest display resize: {width}x{height}");
+                requested = Some(size);
             }
         }
         if let Some(status) = qemu_stopped(&qemu) {
@@ -1429,9 +1473,10 @@ impl Render for Frame {
          */
         let wanted = window_size(viewport, scale);
         self.wanted = Some(wanted);
-        if let Some(bridge) = &self.bridge {
-            bridge.set_window_size(wanted);
-        }
+        let blur = self
+            .bridge
+            .as_ref()
+            .and_then(|bridge| bridge.resized(wanted, Instant::now()));
         let content = if self.settings_open {
             self.settings(cx).into_any_element()
         } else if self.surface_demo {
@@ -1496,6 +1541,9 @@ impl Render for Frame {
             .on_scroll_wheel(
                 cx.listener(move |frame, event: &ScrollWheelEvent, _, _| frame.wheel(event.delta)),
             );
+        if let Some(blur) = blur {
+            root = root.blur(px(blur));
+        }
         for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
             root = root
                 .on_mouse_down(
@@ -1715,29 +1763,103 @@ mod tests {
         );
     }
 
+    /* what the bridge does with the size the window is at: ask the guest, once, when it holds still */
+    fn ask(
+        resize: &mut Resize,
+        asked: &mut Option<WindowSize>,
+        size: WindowSize,
+        now: Instant,
+    ) -> bool {
+        resize.changed(size, now);
+        if resize.landed(now) && *asked != Some(size) {
+            *asked = Some(size);
+            return true;
+        }
+        false
+    }
+
     #[test]
-    fn a_drag_sends_one_resize_at_the_size_it_lands_on() {
-        let mut settle = Settled::new();
+    fn a_drag_asks_for_one_resize_at_the_size_it_lands_on() {
+        let mut resize = Resize::new();
+        let mut asked = None;
         let start = Instant::now();
         for step in 0..39u32 {
             let viewport = gpui::size(gpui::px(800.0 + step as f32 * 4.0), gpui::px(600.0));
-            let size = window_size(viewport, 2.0);
-            assert_eq!(
-                settle.offer(size, start + Duration::from_millis(u64::from(step) * 10)),
-                None,
+            let at = start + Duration::from_millis(u64::from(step) * 10);
+            assert!(
+                !ask(&mut resize, &mut asked, window_size(viewport, 2.0), at),
                 "a drag asked for a resize mid-flight"
             );
         }
         let landed = window_size(gpui::size(gpui::px(956.0), gpui::px(600.0)), 2.0);
-        assert_eq!(
-            settle.offer(landed, start + Duration::from_millis(400)),
-            None
+        let at = start + Duration::from_millis(400);
+        assert!(!ask(&mut resize, &mut asked, landed, at));
+        assert!(ask(&mut resize, &mut asked, landed, at + RESIZE_SETTLE));
+        assert!(!ask(&mut resize, &mut asked, landed, at + RESIZE_SETTLE * 2));
+        assert_eq!(asked, Some(landed));
+    }
+
+    #[test]
+    fn a_resize_blurs_and_then_clears_itself() {
+        let size = |width: f32| window_size(gpui::size(gpui::px(width), gpui::px(600.0)), 1.0);
+        let start = Instant::now();
+        let mut resize = Resize::new();
+
+        /* the size the window opens at is where it started, not a drag */
+        let mut asked = None;
+        assert!(!ask(&mut resize, &mut asked, size(800.0), start));
+        assert!(!resize.dragging(start));
+
+        resize.changed(size(804.0), start);
+        assert!(resize.dragging(start));
+        assert!(
+            resize.landed(start + RESIZE_SETTLE),
+            "the guest has to be asked while the blur is still up"
         );
+
+        /* a size the window repeats holds nothing: the drag has not moved on */
+        resize.changed(size(804.0), start + BLUR_HOLD / 2);
+        assert!(resize.dragging(start + BLUR_HOLD - Duration::from_millis(1)));
+        assert!(!resize.dragging(start + BLUR_HOLD));
+
+        /* a size it moves on to holds it from the moment it moved */
+        resize.changed(size(900.0), start + BLUR_HOLD / 2);
+        assert!(resize.dragging(start + BLUR_HOLD));
+        assert!(!resize.dragging(start + BLUR_HOLD + BLUR_HOLD / 2));
+    }
+
+    #[test]
+    fn the_blur_comes_up_and_lets_go_over_a_few_frames() {
+        let size = |width: f32| window_size(gpui::size(gpui::px(width), gpui::px(600.0)), 1.0);
+        let start = Instant::now();
+        let mut resize = Resize::new();
+
+        let mut asked = None;
+        ask(&mut resize, &mut asked, size(800.0), start);
         assert_eq!(
-            settle.offer(landed, start + Duration::from_millis(400) + RESIZE_SETTLE),
-            Some(landed)
+            resize.blur(start),
+            None,
+            "the size the window opened at is no drag"
         );
-        assert_eq!(settle.offer(landed, start + Duration::from_secs(4)), None);
+
+        resize.changed(size(804.0), start);
+        assert_eq!(resize.blur(start), Some(0.0));
+        let coming_up = resize.blur(start + BLUR_FADE / 2).unwrap();
+        assert!(coming_up > 0.0 && coming_up < BLUR_RADIUS);
+        assert_eq!(resize.blur(start + BLUR_FADE), Some(BLUR_RADIUS));
+
+        /* the ramp is only at the ends: a drag still moving is blurred the whole way */
+        resize.changed(size(900.0), start + BLUR_HOLD / 2);
+        assert_eq!(
+            resize.blur(start + BLUR_HOLD / 2 + BLUR_FADE),
+            Some(BLUR_RADIUS)
+        );
+
+        let going_away = resize
+            .blur(start + BLUR_HOLD / 2 + BLUR_HOLD - BLUR_FADE / 2)
+            .unwrap();
+        assert!(going_away > 0.0 && going_away < BLUR_RADIUS);
+        assert_eq!(resize.blur(start + BLUR_HOLD / 2 + BLUR_HOLD), None);
     }
 
     #[test]
@@ -1965,7 +2087,7 @@ fn grab_settle() -> u64 {
 fn ask_size(bridge: &Bridge, width: u32, height: u32) -> (u32, u32) {
     let requested = window_size(size(px(width as f32), px(height as f32)), GRAB_SCALE);
     let wanted = clamp_to_display((requested.width, requested.height), GUEST_MAX_DISPLAY);
-    *bridge.window_size.lock().unwrap() = Some(requested);
+    bridge.resized(requested, Instant::now());
     wanted
 }
 
