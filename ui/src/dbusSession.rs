@@ -11,7 +11,7 @@ use crate::dbusDisplay::{
 };
 use crate::panel::refresh_rate;
 use zbus::zvariant::Value;
-use crate::geometry::{clamp_to_display, opening_size};
+use crate::geometry::{clamp_to_display, opening_size, WindowSize};
 use crate::input::{send_button, Input, KeyboardProxy, MouseProxy, WHEEL_DOWN, WHEEL_UP};
 use crate::qemu::{qemu_stopped, Qemu};
 use crate::resize::SharedResize;
@@ -255,6 +255,16 @@ pub(crate) async fn connect_display(
 
             (tracked.size(), tracked.landed(now))
         };
+        /*
+         * Every size that lands here is a re-mode in the guest: EDID, kernel mode and the
+         * compositor's output are all rebuilt, and the compositor paints its own background
+         * while it does.  A window that keeps changing size re-arms the blur on each step and
+         * puts a run of those re-modes underneath it, which is where the flicker between the
+         * desktop and a flat colour comes from (seen 2026-09-17: a window walked from
+         * 2560x1440 down to 1826x1328 with three re-modes under it).  Nothing in this process
+         * resizes a window - `PlatformWindow::resize` is never called and the macOS platform
+         * sizes none - so whatever moved it was outside, and it is not known to this file.
+         */
         if let Some(size) = wanted {
             let size = opening_size(size, display, ready);
             if landed && requested != Some(size) {
@@ -275,6 +285,11 @@ pub(crate) async fn connect_display(
                     .await
                     .map_err(|error| format!("could not resize the QEMU display: {error}"))?;
                 println!("requested guest display resize: {width}x{height} at {panel} millihertz");
+                resize.lock().unwrap().asking(WindowSize {
+                    width,
+                    height,
+                    ..size
+                });
                 requested = Some(size);
             }
         }

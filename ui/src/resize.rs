@@ -15,8 +15,12 @@ pub(crate) type SharedResize = Arc<Mutex<Resize>>;
  * pauses on the corner is not a window that has stopped moving, so nothing is asked for until
  * it is let go.  Asking as the drag moves was tried and is worse: a Wayland guest rebuilds its
  * output for every mode it adopts, which is a frame of its own background - grey - per ask, and
- * a drag is a dozen asks a second.  The guest is told once, at the size the drag landed on,
- * which the hold is sized to cover.
+ * a drag is a dozen asks a second.  The guest is told once, at the size the drag landed on.
+ *
+ * The hold lasts until the guest sends the frame for that size, not for a fixed while: a guest
+ * that re-modes quickly is uncovered as soon as it is back, and BLUR_HOLD is only the ceiling
+ * for one that never sends that size at all (a guest whose console keeps the size it had, which
+ * is what `frame_shape` reports).
  *
  * The blur it hands out is a radius to paint with rather than on or off: it comes up over a few
  * frames, lets go the same way, and a drag that starts while the blur is still fading picks the
@@ -37,6 +41,10 @@ pub(crate) struct Resize {
     pub(crate) drag: Option<Instant>,
     /* the corner of the window is being held right now */
     pub(crate) held: bool,
+    /* the size the guest was last told to be */
+    pub(crate) asked: Option<WindowSize>,
+    /* and the moment a frame at that size arrived, which is the guest being back */
+    pub(crate) back: Option<Instant>,
 }
 
 impl Resize {
@@ -46,7 +54,30 @@ impl Resize {
             since: None,
             drag: None,
             held: false,
+            asked: None,
+            back: None,
         }
+    }
+
+    /* the guest has been asked for this size: the blur stays up until it is back at it */
+    pub(crate) fn asking(&mut self, size: WindowSize) {
+        self.asked = Some(size);
+        self.back = None;
+    }
+
+    /*
+     * A frame arrived, this big.  One the size that was asked for is the guest back, and the
+     * blur has nothing left to hide; any other size is a guest still on its way (or one that
+     * will not come), which leaves the ceiling to clear it.
+     */
+    pub(crate) fn arrived(&mut self, width: u32, height: u32, now: Instant) {
+        let Some(asked) = self.asked else {
+            return;
+        };
+        if (asked.width, asked.height) != (width, height) || self.back.is_some() {
+            return;
+        }
+        self.back = Some(now);
     }
 
     /*
@@ -71,12 +102,26 @@ impl Resize {
         }
         self.size = Some(size);
         self.since = Some(now);
+        self.asked = None;
+        self.back = None;
     }    pub(crate) fn size(&self) -> Option<WindowSize> {
         self.size
     }
 
     pub(crate) fn dragging(&self, now: Instant) -> bool {
-        self.held || (self.drag.is_some() && self.unchanged_for(now) < BLUR_HOLD)
+        self.held || (self.drag.is_some() && self.until(now) > now)
+    }
+
+    /*
+     * The moment the blur has to be off by: the guest's frame at the size it was asked for,
+     * once that has arrived, and otherwise the ceiling the hold is allowed.
+     */
+    fn until(&self, now: Instant) -> Instant {
+        let ceiling = self.since.map(|since| since + BLUR_HOLD).unwrap_or(now);
+        let Some(back) = self.back else {
+            return ceiling;
+        };
+        (back + BLUR_FADE).min(ceiling)
     }
 
     /* what to blur the frame by, or nothing when there is no drag to cover */
@@ -96,7 +141,7 @@ impl Resize {
         let left = if self.held {
             BLUR_HOLD
         } else {
-            BLUR_HOLD.saturating_sub(self.unchanged_for(now))
+            self.until(now).saturating_duration_since(now)
         };
         let up = now.saturating_duration_since(drag);
 
@@ -131,6 +176,62 @@ mod tests {
             return true;
         }
         false
+    }
+
+    /*
+     * The hold is the guest's own return, not a duration: the frame at the size it was asked
+     * for takes the blur down as soon as it comes, and a frame of any other size leaves the
+     * ceiling to do it.
+     */
+    #[test]
+    fn the_frame_for_the_size_we_asked_for_lets_the_blur_go() {
+        let size = |width: f32| window_size(gpui::size(gpui::px(width), gpui::px(600.0)), 1.0);
+        let start = Instant::now();
+        let mut resize = Resize::new();
+
+        let mut asked = None;
+        ask(&mut resize, &mut asked, size(800.0), start);
+        resize.changed(size(900.0), start, false);
+        let asked_at = start + RESIZE_SETTLE;
+        resize.asking(size(900.0));
+        assert_eq!(resize.blur(asked_at), Some(BLUR_RADIUS));
+
+        /* the guest came back at the size it was asked for */
+        resize.arrived(900, 600, asked_at + Duration::from_millis(120));
+        assert_eq!(
+            resize.blur(asked_at + Duration::from_millis(120)),
+            Some(BLUR_RADIUS)
+        );
+        let going = resize
+            .blur(asked_at + Duration::from_millis(120) + BLUR_FADE / 2)
+            .unwrap();
+        assert!(going > 0.0 && going < BLUR_RADIUS, "the blur did not let go");
+        assert_eq!(
+            resize.blur(asked_at + Duration::from_millis(120) + BLUR_FADE),
+            None,
+            "the blur outlasted the frame it was waiting for"
+        );
+        assert!(
+            asked_at + Duration::from_millis(120) + BLUR_FADE < start + BLUR_HOLD,
+            "this test does not tell the ceiling from the frame"
+        );
+    }
+
+    #[test]
+    fn a_frame_of_another_size_leaves_the_ceiling_to_clear_the_blur() {
+        let size = |width: f32| window_size(gpui::size(gpui::px(width), gpui::px(600.0)), 1.0);
+        let start = Instant::now();
+        let mut resize = Resize::new();
+
+        let mut asked = None;
+        ask(&mut resize, &mut asked, size(800.0), start);
+        resize.changed(size(900.0), start, false);
+        resize.asking(size(900.0));
+
+        /* a guest whose console kept the size it had: the ceiling is all there is */
+        resize.arrived(1390, 600, start + BLUR_HOLD / 2);
+        assert_eq!(resize.blur(start + BLUR_HOLD / 2), Some(BLUR_RADIUS));
+        assert_eq!(resize.blur(start + BLUR_HOLD), None);
     }
 
     #[test]

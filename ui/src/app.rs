@@ -258,6 +258,17 @@ impl Frame {
     }
 
     fn landed(&mut self, width: u32, height: u32) {
+        /*
+         * The guest is at this size now, which is what lets the blur go as soon as it is back
+         * rather than at the end of a hold that was guessed at.
+         */
+        if let Some(bridge) = &self.bridge {
+            bridge
+                .resize
+                .lock()
+                .unwrap()
+                .arrived(width, height, Instant::now());
+        }
         self.surface = (width, height);
         let note = frame_shape(self.surface, self.wanted);
         if note != self.shape_note {
