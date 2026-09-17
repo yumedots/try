@@ -31,7 +31,8 @@ it at **~10 fps** with ~100 ms of lag per frame.
   BGRA `CVPixelBuffer`), on top of sonorahq/gpui's layer filters (`Styled::blur`,
   `Styled::backdrop_blur`, `Styled::layer_scale`, …). If you need to change gpui, commit in
   `~/gpui`, push, and bump the rev in `ui/Cargo.toml`.
-- Guest: generic Arch Linux ARM aarch64 (mirror picked at build time), SDDM → Hyprland,
+- Guest: generic Arch Linux ARM aarch64 (mirror picked at build time), autologin into
+  Hyprland on tty1 (`guest/hyprland.service`, no display manager),
   dotfiles from the `dotfiles` submodule. ssh `alarm@127.0.0.1:2222` (password `alarm`),
   forwarded by `-netdev user,hostfwd=…` — available in the bridge run too.
 
