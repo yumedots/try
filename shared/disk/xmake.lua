@@ -70,12 +70,11 @@ function shared.prepare_guest(g, os, find_tool, io)
     os.cp(firstboot, path.join(prov, "firstboot"))
     os.cp(trydisplay, path.join(prov, "tryDisplay"))
     os.cp(path.join(shared.projectdir, "guest/packages.txt"), prov)
-    os.cp(path.join(shared.projectdir, "guest/Xsetup"), path.join(prov, "Xsetup"))
     if not shared.dotfiles or not os.isdir(shared.dotfiles) then
         os.raise("dotfiles source missing or submodule not populated: " .. tostring(shared.dotfiles))
     end
     os.cp(path.join(shared.dotfiles, "*"), path.join(prov, "dotfiles"))
-    os.execv("chmod", {"755", path.join(prov, "firstboot"), path.join(prov, "tryDisplay"), path.join(prov, "Xsetup")})
+    os.execv("chmod", {"755", path.join(prov, "firstboot"), path.join(prov, "tryDisplay")})
     os.cp(path.join(shared.projectdir, "guest/firstBoot.service"), path.join(shared.rootdir, "etc/systemd/system/firstBoot.service"))
     local wants = path.join(shared.rootdir, "etc/systemd/system/multi-user.target.wants")
     os.mkdir(wants)
@@ -84,6 +83,8 @@ function shared.prepare_guest(g, os, find_tool, io)
     local graphical_wants = path.join(shared.rootdir, "etc/systemd/system/graphical.target.wants")
     os.mkdir(graphical_wants)
     os.execv("ln", {"-sf", "/etc/systemd/system/tryDisplay.service", path.join(graphical_wants, "tryDisplay.service")})
+    os.cp(path.join(shared.projectdir, "guest/hyprland.service"), path.join(shared.rootdir, "etc/systemd/system/hyprland.service"))
+    os.execv("ln", {"-sf", "/etc/systemd/system/hyprland.service", path.join(graphical_wants, "hyprland.service")})
 
     local mke2fs = shared.mke2fs(find_tool)
     if not mke2fs then

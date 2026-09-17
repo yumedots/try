@@ -1,10 +1,7 @@
 sudo
 openssh
 git
-sddm
 qt6-wayland
-xorg-xrdb
-xsettingsd
 zsh
 foot
 hyprland

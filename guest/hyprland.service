@@ -1,0 +1,21 @@
+[Unit]
+Description=Hyprland on tty1
+After=firstBoot.service tryDisplay.service
+Conflicts=getty@tty1.service
+Requires=dev-tty1.device
+
+[Service]
+User=alarm
+PAMName=login
+WorkingDirectory=/home/alarm
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user XDG_CURRENT_DESKTOP=Hyprland XDG_SESSION_DESKTOP=Hyprland
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=always
+RestartSec=1
+ExecStart=/usr/bin/Hyprland
+
+[Install]
+WantedBy=graphical.target
