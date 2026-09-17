@@ -7,6 +7,7 @@ use crate::dbusSession::connect_display;
 use crate::geometry::{display_max, WindowSize};
 use crate::host::run_host;
 use crate::input::Input;
+use crate::mouseButtons;
 use crate::paths::{project_dir, serial_log};
 use crate::qemu::{qemu_command, Qemu};
 use crate::resize::{Resize, SharedResize};
@@ -33,7 +34,7 @@ impl Bridge {
     pub(crate) fn resized(&self, size: WindowSize, now: Instant) -> Option<f32> {
         let mut resize = self.resize.lock().unwrap();
 
-        resize.changed(size, now);
+        resize.changed(size, now, mouseButtons::held());
         resize.blur(now)
     }
 }

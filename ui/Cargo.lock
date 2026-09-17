@@ -5565,6 +5565,7 @@ dependencies = [
  "gpui_platform",
  "image",
  "io-surface",
+ "objc",
  "serde_bytes",
  "smallvec",
  "zbus",

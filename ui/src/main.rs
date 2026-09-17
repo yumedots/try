@@ -29,6 +29,8 @@ mod frameRender;
 mod frameView;
 #[allow(non_snake_case)]
 mod guestSurface;
+#[allow(non_snake_case)]
+mod mouseButtons;
 
 fn main() {
     if let Some(path) = env::var_os("TRY_GRAB") {

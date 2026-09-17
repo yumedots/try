@@ -218,10 +218,11 @@ pub(crate) async fn connect_display(
          * shaped screen.  Asking for the window scaled into that box keeps the layout
          * matching the window, at the cost of the host scaling the image a little.
          */
+        let now = Instant::now();
         let (wanted, landed) = {
             let tracked = resize.lock().unwrap();
 
-            (tracked.size(), tracked.landed(Instant::now()))
+            (tracked.size(), tracked.landed(now))
         };
         if let Some(size) = wanted {
             let size = opening_size(size, display, ready);
