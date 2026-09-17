@@ -62,9 +62,10 @@ target("ui")
 
 task("run")
 on_run(function ()
-    os.execv("xmake", {"vm"})
+    os.execv("xmake", {"build", "ui"}, {envs = build_env()})
+    launch(os)
 end)
 set_menu {
     usage = "xmake run",
-    description = "Boot the guest in the pinned QEMU window"
+    description = "Open the launcher window with the guest inside it"
 }
