@@ -188,7 +188,23 @@ impl Listener {
 }
 
 
+/*
+ * The frames the console cannot put in a caller surface of ours arrive here instead and are
+ * drawn as an image, next to the frames that do fit and are drawn from the surface.  So this
+ * has to read the colour order exactly the way the surface path does, or the window flips
+ * between the desktop and the same picture with red and blue exchanged.
+ *
+ * QEMU describes the memory order with a pixman format.  ARGB and BGRA name a word whose
+ * bytes come out b,g,r on this host, RGBA and ABGR one that already comes out r,g,b.
+ */
+const PIXMAN_TYPE_ARGB: u32 = 2;
+const PIXMAN_TYPE_BGRA: u32 = 8;
+
 pub(crate) fn pixels_to_rgba(width: u32, height: u32, stride: u32, format: u32, data: &[u8]) -> Vec<u8> {
+    let flip = matches!(
+        (format >> 16) & 0x3f,
+        PIXMAN_TYPE_ARGB | PIXMAN_TYPE_BGRA
+    );
     let mut pixels = vec![0; width as usize * height as usize * 4];
     for y in 0..height as usize {
         let source_row = y * stride as usize;
@@ -200,7 +216,7 @@ pub(crate) fn pixels_to_rgba(width: u32, height: u32, stride: u32, format: u32, 
                 break;
             }
             let bytes = &data[source..source + 4];
-            if format == 0x20088880 || format == 0x20088888 {
+            if flip {
                 pixels[target..target + 4].copy_from_slice(&[bytes[2], bytes[1], bytes[0], 255]);
             } else {
                 pixels[target..target + 4].copy_from_slice(&[bytes[0], bytes[1], bytes[2], 255]);
@@ -216,7 +232,26 @@ mod tests {
     use std::sync::{mpsc, Arc};
     use crate::surfaceRing::Ring;
 
-    const BGRX: u32 = 0x20088880;
+    /* what qemu_create_displaysurface hands every console surface */
+    const BGRX: u32 = 0x20020888;
+
+    #[test]
+    fn the_console_frame_arrives_in_the_order_the_surface_path_draws() {
+        /* a buffer stored b,g,r draws as rgb(r,g,b) through the caller surface, so the
+           frame that comes over the socket has to be converted to r,g,b as well */
+        let stored = [0x10, 0x20, 0xf0, 0xff];
+        assert_eq!(pixels_to_rgba(1, 1, 4, BGRX, &stored), vec![0xf0, 0x20, 0x10, 0xff]);
+
+        /* a format whose bytes already come out r,g,b is left as it is */
+        assert_eq!(
+            pixels_to_rgba(1, 1, 4, 0x20030888, &[0xf0, 0x20, 0x10, 0xff]),
+            vec![0xf0, 0x20, 0x10, 0xff]
+        );
+        assert_eq!(
+            pixels_to_rgba(1, 1, 4, 0x20088888, &stored),
+            vec![0xf0, 0x20, 0x10, 0xff]
+        );
+    }
 
     fn frame(width: u32, height: u32, value: u8) -> Vec<u8> {
         let mut data = vec![0; width as usize * height as usize * 4];
