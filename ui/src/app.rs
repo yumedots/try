@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 use std::{env, sync::{mpsc::Receiver, Arc, Mutex}, time::{Duration, Instant}};
 use crate::bridge::{spawn_bridge, start_bridge, Bridge, Event};
 use crate::dbusSession::LAST_FRAME;
-use crate::frameDump::dump_frame;
+use crate::frameDump::{dump_frame, spawn_surface_trace};
 use crate::geometry::{frame_shape, guest_position, WindowSize};
 use crate::guestSurface::GuestSurface;
 use crate::input::{
@@ -64,6 +64,7 @@ impl Frame {
             Ok(bridge) => (Some(bridge), None),
             Err(error) => (None, Some(error)),
         };
+        spawn_surface_trace(ring.clone());
         cx.observe_keystrokes(|frame, event, _, cx| {
             let keystroke = &event.keystroke;
             if is_settings_toggle(keystroke) {

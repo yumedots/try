@@ -56,6 +56,10 @@ impl GuestSurface {
         &self.buffer
     }
 
+    pub fn stride(&self) -> u32 {
+        self.buffer.get_bytes_per_row() as u32
+    }
+
     pub fn io_surface_id(&self) -> u32 {
         crate::surfacePort::id(&self.buffer)
     }

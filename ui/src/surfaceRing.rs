@@ -55,6 +55,10 @@ impl Ring {
         (self.width, self.height)
     }
 
+    pub(crate) fn stride(&self) -> u32 {
+        self.ready().map(GuestSurface::stride).unwrap_or(0)
+    }
+
     pub(crate) fn ready(&self) -> Option<&GuestSurface> {
         self.ready
             .map(|index| &self.surfaces[index])

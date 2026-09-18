@@ -24,6 +24,10 @@ extern "C" {
         name: *const c_char,
         service: MachPort,
     ) -> KernReturn;
+    #[cfg(test)]
+    fn IOSurfaceLock(surface: *mut c_void, options: u32, seed: *mut u32) -> KernReturn;
+    #[cfg(test)]
+    fn IOSurfaceUnlock(surface: *mut c_void, options: u32, seed: *mut u32) -> KernReturn;
 }
 
 /*
@@ -43,6 +47,27 @@ pub(crate) fn id(pixel_buffer: &CVPixelBuffer) -> u32 {
     surface(pixel_buffer)
         .map(|surface| unsafe { IOSurfaceGetID(surface) })
         .unwrap_or(0)
+}
+
+/*
+ * The console locks the surface it is writing into for the length of the write, so a
+ * window that draws a surface the console holds is drawing one that is busy.  The ring is
+ * what keeps those apart; these are what a harness needs to put them together again.
+ */
+#[cfg(test)]
+pub(crate) fn lock(pixel_buffer: &CVPixelBuffer) -> bool {
+    surface(pixel_buffer)
+        .map(|surface| unsafe { IOSurfaceLock(surface, 0, std::ptr::null_mut()) } == 0)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+pub(crate) fn unlock(pixel_buffer: &CVPixelBuffer) {
+    if let Some(surface) = surface(pixel_buffer) {
+        unsafe {
+            IOSurfaceUnlock(surface, 0, std::ptr::null_mut());
+        }
+    }
 }
 
 /*
