@@ -37,6 +37,10 @@ mod surfacePort;
 #[allow(non_snake_case)]
 mod surfaceRing;
 
+#[cfg(test)]
+#[allow(non_snake_case)]
+mod displayTests;
+
 fn main() {
     if let Some(path) = env::var_os("TRY_GRAB") {
         grab(PathBuf::from(path));
