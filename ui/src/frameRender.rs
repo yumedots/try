@@ -111,9 +111,6 @@ impl Render for Frame {
             .on_scroll_wheel(
                 cx.listener(move |frame, event: &ScrollWheelEvent, _, _| frame.wheel(event.delta)),
             );
-        if let Some(blur) = blur {
-            root = root.blur(px(blur));
-        }
         for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
             root = root
                 .on_mouse_down(
@@ -129,6 +126,24 @@ impl Render for Frame {
                     }),
                 );
         }
-        root.child(content)
+        root = root.child(content);
+        /*
+         * The blur covers the guest while it re-modes, and it sits on a layer of its own: a
+         * filter on the layer the guest's surface is drawn in has the window showing a frame
+         * that went through the filter pass, which is where the colour order went wrong and
+         * the window started flipping between the desktop and a red-and-blue exchanged copy.
+         * With the level at nothing this paints no layer at all, so an idle window - the one
+         * that flickered - carries no filter pass.
+         */
+        if let Some(blur) = blur {
+            root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .backdrop_blur(px(blur)),
+            )
+        } else {
+            root
+        }
     }
 }
